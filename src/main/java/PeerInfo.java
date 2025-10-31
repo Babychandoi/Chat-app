@@ -1,10 +1,10 @@
 public class PeerInfo {
-    String ip;
-    int port;
-    int filePort;
-    int voicePort;
-    int videoPort;
-    int videoAudioPort;
+    public String ip;
+    public int port;
+    public int filePort;
+    public int voicePort;
+    public int videoPort;
+    public int videoAudioPort;
 
     public PeerInfo(String ip, int port, int filePort) {
         this.ip = ip;

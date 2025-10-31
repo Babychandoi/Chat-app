@@ -2,9 +2,9 @@ import java.util.HashSet;
 import java.util.Set;
 
 public class ChatGroup {
-    String name;
-    String creator;
-    Set<String> members = new HashSet<>();
+    public String name;
+    public String creator;
+    public Set<String> members = new HashSet<>();
 
     public ChatGroup(String name, String creator) {
         this.name = name;

@@ -4,10 +4,10 @@ import java.io.PrintWriter;
 import java.net.Socket;
 
 public class PeerConnection {
-    Socket socket;
-    String peerName;
-    BufferedReader reader;
-    PrintWriter writer;
+    public Socket socket;
+    public String peerName;
+    public BufferedReader reader;
+    public PrintWriter writer;
 
     public PeerConnection(Socket socket, String peerName,
                           BufferedReader reader, PrintWriter writer) {
