@@ -515,7 +515,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👥 Authors
 
-- **Your Name** - *Initial work* - [YourGitHub](https://github.com/yourusername)
+- **Đỗ Quốc Phong** - *Initial work* - [Babychandoi](https://github.com/Babychandoi)
 
 ---
 
@@ -527,14 +527,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 📞 Support
-
-Có vấn đề? Tạo [Issue](https://github.com/yourusername/chat-p2p/issues) hoặc liên hệ:
-
-- 📧 Email: your.email@example.com
-- 💬 Discord: YourDiscord#1234
-
----
 
 ## 🎓 Education Use
 
