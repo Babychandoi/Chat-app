@@ -299,6 +299,63 @@ public class NetworkManager {
             }
             saveChatHistory(groupName + "_group", content, false);
 
+        } else if (type.equals("GROUP_SYNC") && parts.length >= 3) {
+            // XỬ LÝ ĐỒNG BỘ NHÓM
+            String groupName = parts[1];
+            String restData = parts[2];
+            String[] groupData = restData.split(":", 2);
+
+            if (groupData.length >= 2) {
+                String creator = groupData[0];
+                String membersList = groupData[1];
+
+                // Tạo hoặc cập nhật nhóm
+                ChatGroup group = chatGroups.get(groupName);
+                if (group == null) {
+                    group = new ChatGroup(groupName, creator);
+                    chatGroups.put(groupName, group);
+                }
+
+                // Thêm các thành viên
+                String[] members = membersList.split(",");
+                for (String member : members) {
+                    group.addMember(member.trim());
+                }
+
+                // Lưu nhóm vào file
+                saveGroup(group);
+
+                // Cập nhật giao diện
+                mainController.getChatManager().refreshContactList();
+
+                System.out.println("✓ Received group sync: " + groupName + " with " + group.members.size() + " members");
+            }
+
+        } else if (type.equals("GROUP_FILE") && parts.length >= 3) {
+            String groupName = parts[1];
+            String fileData = parts[2];
+            String[] fileInfo = fileData.split("\\|");
+
+            if (fileInfo.length >= 5) {
+                String sender = fileInfo[0];
+                String fileName = fileInfo[1];
+                long fileSize = Long.parseLong(fileInfo[2]);
+                String senderIp = fileInfo[3];
+                String uniqueFileName = fileInfo[4];
+
+                PeerInfo senderPeer = discoveredPeers.get(sender);
+                if (senderPeer != null) {
+                    downloadFileFromPeer(senderIp, senderPeer.filePort, uniqueFileName, fileName, () -> {
+                        if (mainController.getChatManager().getCurrentChatTarget() != null &&
+                                mainController.getChatManager().getCurrentChatTarget().equals(groupName) &&
+                                mainController.getChatManager().isGroupChat()) {
+                            mainController.getChatManager().displayFileMessage(sender, fileName, fileSize, uniqueFileName, false);
+                        }
+                    });
+                }
+                saveChatHistory(groupName + "_group", "[FILE:" + fileName + "]", false);
+            }
+
         } else if (type.equals("CALL_ACCEPTED")) {
             mainController.getCallManager().handleCallAccepted(from);
 

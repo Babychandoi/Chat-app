@@ -1,0 +1,466 @@
+# BÁO CÁO ỨNG DỤNG CHAT P2P
+## Real-time Event-Driven Communication với Voice/Video Call
+
+---
+
+## 1. TỔNG QUAN DỰ ÁN
+
+### 1.1. Giới thiệu
+Ứng dụng Chat P2P là một hệ thống nhắn tin ngang hàng (peer-to-peer) được phát triển bằng Java và JavaFX, cho phép người dùng giao tiếp trực tiếp với nhau qua mạng LAN mà không cần máy chủ trung gian. Ứng dụng hỗ trợ nhắn tin văn bản, chia sẻ file, tạo nhóm chat, và đặc biệt là tính năng gọi thoại/video call.
+
+### 1.2. Mục tiêu
+- Xây dựng hệ thống chat P2P hoạt động trên mạng LAN
+- Triển khai kiến trúc event-driven để xử lý real-time
+- Hỗ trợ đa phương thức giao tiếp: text, file, voice, video
+- Quản lý nhóm chat với nhiều thành viên
+- Giao diện người dùng thân thiện, hiện đại
+
+### 1.3. Công nghệ sử dụng
+- **Ngôn ngữ**: Java 8+
+- **GUI Framework**: JavaFX
+- **Video Capture**: Webcam Capture API (Sarxos)
+- **Audio**: Java Sound API
+- **Networking**: Java Socket Programming
+- **Concurrency**: Java Concurrent HashMap, Threads
+
+---
+
+## 2. KIẾN TRÚC HỆ THỐNG
+
+### 2.1. Mô hình tổng quan
+```
+┌─────────────────────────────────────────────────────────┐
+│                   P2P Chat Application                   │
+├─────────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │ AuthManager  │  │ ChatManager  │  │ CallManager  │  │
+│  └──────────────┘  └──────────────┘  └──────────────┘  │
+│         │                  │                  │          │
+│         └──────────────────┴──────────────────┘          │
+│                           │                              │
+│                  ┌────────▼────────┐                     │
+│                  │ MainController  │                     │
+│                  └────────┬────────┘                     │
+│                           │                              │
+│         ┌─────────────────┼─────────────────┐            │
+│         │                 │                 │            │
+│  ┌──────▼──────┐   ┌─────▼─────┐   ┌──────▼──────┐     │
+│  │  Network    │   │   Voice   │   │    Video    │     │
+│  │  Manager    │   │   Call    │   │    Call     │     │
+│  └─────────────┘   │  Manager  │   │   Manager   │     │
+│                    └───────────┘   └─────────────┘     │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 2.2. Các thành phần chính
+
+#### 2.2.1. MainController
+- Điều phối toàn bộ ứng dụng
+- Quản lý vòng đời của các component
+- Xử lý login success và khởi tạo hệ thống
+
+#### 2.2.2. AuthManager
+- Xác thực người dùng (login/register)
+- Lưu trữ thông tin tài khoản trong file `users.txt`
+- Giao diện đăng nhập/đăng ký hiện đại
+
+#### 2.2.3. ChatManager
+- Quản lý giao diện chat chính
+- Hiển thị danh sách contacts và nhóm
+- Xử lý gửi/nhận tin nhắn text và file
+- Load/save chat history
+- Tạo và quản lý nhóm chat
+
+#### 2.2.4. NetworkManager
+- **Discovery Server** (Port 8889): Tự động phát hiện peers trên LAN
+- **Chat Server** (Port động): Nhận kết nối chat từ peers
+- **File Server** (Port động): Xử lý truyền file
+- Quản lý kết nối P2P với các peer
+- Đồng bộ hóa nhóm chat giữa các thành viên
+- Routing messages (direct, group, file)
+
+#### 2.2.5. CallManager
+- Quản lý UI của voice/video call
+- Điều phối giữa VoiceCallManager và VideoCallManager
+- Hiển thị dialog incoming call
+- Xử lý accept/reject call
+
+#### 2.2.6. VoiceCallManager
+- Voice Server (Port 9000+)
+- Streaming audio real-time qua socket
+- Sử dụng Java Sound API (TargetDataLine/SourceDataLine)
+- Format: 16kHz, 16-bit, mono
+
+#### 2.2.7. VideoCallManager
+- Video Server (Port 9500+)
+- Audio Server cho video call (Port 9600+)
+- Capture webcam sử dụng Sarxos Webcam API
+- Streaming video: 640x480, 15 FPS, JPEG compression
+- Đồng bộ audio/video streaming
+
+---
+
+## 3. TÍNH NĂNG CHI TIẾT
+
+### 3.1. Xác thực người dùng
+**Đăng ký:**
+- Username tối thiểu 3 ký tự
+- Lưu thông tin dạng `username:password` trong file
+- Kiểm tra trùng lặp username
+
+**Đăng nhập:**
+- Xác thực với database local
+- Tự động khởi tạo các port dựa trên hashCode của username
+- Ports động: TCP (8888+), File (8890+), Voice (9000+), Video (9500+)
+
+### 3.2. Peer Discovery
+**Cơ chế hoạt động:**
+1. Khi login, app scan toàn bộ subnet (x.x.x.1 - x.x.x.254)
+2. Gửi message `ANNOUNCE` đến port 8889 của mỗi IP
+3. Peer nhận được sẽ response với thông tin của mình
+4. Lưu peer info vào `ConcurrentHashMap<String, PeerInfo>`
+5. Tự động refresh danh sách contacts
+
+**Thông tin peer bao gồm:**
+- IP address
+- Chat port
+- File port
+- Voice port
+- Video port
+- Video audio port
+
+### 3.3. Chat 1-1
+**Gửi tin nhắn:**
+- Tự động kết nối socket với peer nếu chưa có
+- Format: `MESSAGE:sender:content`
+- Lưu chat history vào file local
+- Hiển thị real-time với message bubble style
+
+**Nhận tin nhắn:**
+- Listen trên chat server port
+- Parse message và hiển thị trong UI
+- Lưu vào chat history
+
+### 3.4. Chat Nhóm
+**Tạo nhóm:**
+1. Creator chọn tên nhóm và các thành viên
+2. Lưu file nhóm cho tất cả thành viên: `username_group_groupname.txt`
+3. Gửi `GROUP_SYNC` message đến tất cả thành viên
+4. Các thành viên nhận được tự động tạo nhóm trong app
+
+**Format file nhóm:**
+```
+GroupName
+Creator
+member1,member2,member3
+```
+
+**Gửi tin nhóm:**
+- Format: `GROUP_MESSAGE:groupName:sender: message`
+- Gửi đến tất cả thành viên (trừ bản thân)
+- Hiển thị tên người gửi trong nhóm
+
+### 3.5. Chia sẻ File
+**Cơ chế:**
+1. Người gửi copy file vào `shared_files/` với tên unique
+2. Gửi metadata đến peer: `FILE::filename|size|senderIp|uniqueFilename`
+3. Người nhận tự động download file từ File Server của người gửi
+4. Request format: `REQUEST_FILE:uniqueFilename`
+
+**Giới hạn:**
+- Max file size: 50MB
+- Hỗ trợ mọi loại file
+- Hiển thị icon theo extension
+- Download on-demand
+
+### 3.6. Voice Call
+**Khởi tạo cuộc gọi:**
+1. Caller kết nối đến Voice Server của callee
+2. Gửi `VOICE_CALL:caller`
+3. Callee nhận incoming call dialog
+4. Accept/Reject
+
+**Audio Streaming:**
+- Capture từ microphone: TargetDataLine
+- Playback qua speaker: SourceDataLine
+- Buffer size: 1024 bytes
+- Bidirectional streaming qua socket
+- Real-time với latency thấp
+
+### 3.7. Video Call
+**Architecture:**
+- **2 sockets**: Video socket + Audio socket riêng biệt
+- Video: Port 9500+
+- Audio: Port 9600+
+
+**Video Streaming:**
+1. Capture từ webcam (640x480)
+2. Convert BufferedImage → JPEG
+3. Send qua DataOutputStream: `[size:4bytes][imageData]`
+4. FPS: 15 frames/second
+5. Hiển thị local video (overlay) + remote video (main)
+
+**Audio Streaming:**
+- Tương tự voice call nhưng chạy song song với video
+- Đồng bộ hóa timing
+
+**UI Features:**
+- Local video: 200x150 (overlay góc phải trên)
+- Remote video: 800x600 (main screen)
+- Controls: Mute, Camera toggle, End call
+- Call timer
+- Status indicators
+
+---
+
+## 4. GIAO THỨC TRUYỀN THÔNG
+
+### 4.1. Message Protocol
+```
+MESSAGE_TYPE:PARAM1:PARAM2:...
+
+Ví dụ:
+- MESSAGE:john:Hello World
+- FILE::document.pdf|1024|192.168.1.5|1234567_document.pdf
+- GROUP_MESSAGE:Team:alice: Meeting at 3pm
+- GROUP_SYNC:ProjectTeam:bob:bob,alice,charlie
+- VOICE_CALL:john
+- VIDEO_CALL:alice
+- CALL_ACCEPTED:bob
+- CALL_REJECTED:charlie
+```
+
+### 4.2. Connection Flow
+**Peer Connection:**
+```
+Client                          Server
+  |                               |
+  |-------- HELLO:username ------>|
+  |                               |
+  |<------- HELLO:username -------|
+  |                               |
+  |<----- Messages exchange ----->|
+```
+
+**Discovery:**
+```
+New Peer                    Existing Peer
+  |                               |
+  |-- ANNOUNCE:user:ports... ---->|
+  |                               |
+  |<-- PEER:user:ports... --------|
+```
+
+---
+
+## 5. QUẢN LÝ DỮ LIỆU
+
+### 5.1. Cấu trúc thư mục
+```
+project/
+├── users.txt                 # Tài khoản
+├── chat_history/             # Lịch sử chat
+│   ├── alice_bob.txt
+│   └── alice_Team_group.txt
+├── groups/                   # Thông tin nhóm
+│   ├── alice_group_Team.txt
+│   └── bob_group_Team.txt
+└── shared_files/             # Files được chia sẻ
+    └── 1234567_document.pdf
+```
+
+### 5.2. Chat History Format
+```
+[2025-11-02 14:30:25] alice: Hello
+[2025-11-02 14:30:30] bob: Hi there
+[2025-11-02 14:31:00] alice: [FILE:report.pdf]
+```
+
+---
+
+## 6. XỬ LÝ ĐỒNG BỘ VÀ CONCURRENCY
+
+### 6.1. Thread Management
+- **Discovery threads**: Scan network (254 threads song song)
+- **Server threads**: Accept connections
+- **Connection threads**: Mỗi peer connection 1 thread
+- **Call threads**: Audio send/receive, Video send/receive/display
+- **Daemon threads**: Tự động cleanup khi app đóng
+
+### 6.2. Concurrent Data Structures
+```java
+ConcurrentHashMap<String, PeerConnection> peerConnections
+ConcurrentHashMap<String, PeerInfo> discoveredPeers
+ConcurrentHashMap<String, ChatGroup> chatGroups
+```
+
+### 6.3. Synchronization
+- Platform.runLater() cho UI updates từ background threads
+- AtomicBoolean cho call state management
+- Socket timeouts để tránh blocking vô hạn
+
+---
+
+## 7. GIAO DIỆN NGƯỜI DÙNG
+
+### 7.1. Login Screen
+- Gradient background (#0068FF → #0091FF)
+- Form trắng bo tròn với shadow
+- Validation real-time
+- Error/success messages
+
+### 7.2. Main Chat Screen
+**Layout:**
+- **Left Sidebar (320px)**: User header + Search + Contacts list
+- **Center Panel**: Chat header + Messages + Input box
+- **Message Bubbles**:
+  - Sent: Blue (#007AFF), right-aligned
+  - Received: Gray (#E5E5EA), left-aligned
+  - Max width 300px, wrap text
+
+### 7.3. Call Dialogs
+**Incoming Call:**
+- Modal dialog
+- Caller info
+- Accept/Reject buttons
+- Auto-reject sau 30s
+
+**Active Call:**
+- Voice: Icon + Timer + End button
+- Video: Local/remote video + Controls
+
+---
+
+## 8. XỬ LÝ LỖI VÀ EDGE CASES
+
+### 8.1. Network Errors
+- Connection timeout: 5s cho file transfer, 30s cho video call
+- Socket closed: Tự động cleanup và remove từ connections map
+- Peer offline: Retry connection khi gửi message
+
+### 8.2. File Transfer
+- File exists: Skip download, use local copy
+- File not found: Response ERROR message
+- Large files: Limit 50MB
+
+### 8.3. Call Errors
+- Webcam không khả dụng: Reject call và thông báo
+- Audio device busy: Log error và continue với video only
+- Connection lost: Auto cleanup threads và resources
+
+### 8.4. Group Sync
+- Duplicate group: Update members list
+- Member offline: Skip, sync khi online lại
+- File save error: Log và continue
+
+---
+
+## 9. ĐÁNH GIÁ VÀ HẠN CHẾ
+
+### 9.1. Ưu điểm
+✅ **Không cần server**: Hoàn toàn P2P, giảm chi phí infrastructure
+✅ **Real-time**: Event-driven architecture, latency thấp
+✅ **Tự động discovery**: Không cần config IP thủ công
+✅ **Đa tính năng**: Text, file, voice, video, group chat
+✅ **Modern UI**: JavaFX với design hiện đại
+✅ **Thread-safe**: Sử dụng concurrent collections
+
+### 9.2. Hạn chế
+❌ **LAN only**: Chỉ hoạt động trong cùng subnet
+❌ **No encryption**: Data truyền plain text (chưa mã hóa)
+❌ **No authentication**: Password lưu plain text
+❌ **File size limit**: Max 50MB
+❌ **Video quality**: Cố định 15 FPS, không adaptive
+❌ **No NAT traversal**: Không hoạt động qua router/firewall phức tạp
+❌ **Single device per user**: Không sync giữa nhiều thiết bị
+
+### 9.3. Vấn đề đã sửa
+✅ **Group sync issue**: Đã thêm xử lý `GROUP_SYNC` message
+✅ **Video call connection**: Đã đồng bộ video/audio sockets
+✅ **Thread cleanup**: Proper shutdown của resources
+
+---
+
+## 10. HƯỚNG PHÁT TRIỂN
+
+### 10.1. Tính năng mới
+- 🔐 **End-to-end encryption**: RSA + AES
+- 🌐 **NAT traversal**: STUN/TURN servers để hoạt động qua Internet
+- 📱 **Mobile app**: Android/iOS client
+- 💾 **Cloud backup**: Optional sync chat history lên cloud
+- 🎨 **Themes**: Dark mode, custom themes
+- 🔔 **Notifications**: System tray notifications
+- 📞 **Call history**: Lưu lịch sử cuộc gọi
+- 👥 **Group video call**: Conference với nhiều người
+
+### 10.2. Cải tiến kỹ thuật
+- **WebRTC**: Thay socket bằng WebRTC cho voice/video
+- **Database**: SQLite thay vì text files
+- **Compression**: Compress messages và files
+- **Adaptive bitrate**: Auto-adjust video quality theo bandwidth
+- **Reconnection**: Auto-reconnect khi connection lost
+- **Testing**: Unit tests, integration tests
+- **Logging**: Log4j cho production debugging
+
+### 10.3. UI/UX
+- Emoji picker
+- Message reactions
+- Reply/forward messages
+- Message search
+- User profiles with avatars
+- Typing indicators
+- Read receipts
+- Drag & drop file upload
+
+---
+
+## 11. KẾT LUẬN
+
+Ứng dụng Chat P2P đã thành công xây dựng một hệ thống giao tiếp ngang hàng hoàn chỉnh với đầy đủ các tính năng cơ bản và nâng cao. Kiến trúc event-driven kết hợp với multi-threading đảm bảo hiệu năng real-time tốt. Giao diện JavaFX hiện đại mang lại trải nghiệm người dùng tương tự các ứng dụng chat phổ biến.
+
+Dự án đã chứng minh khả năng triển khai P2P communication mà không cần infrastructure phức tạp, phù hợp cho môi trường LAN như văn phòng, trường học. Với những cải tiến đề xuất về bảo mật và khả năng mở rộng, ứng dụng có tiềm năng phát triển thành một giải pháp chat đầy đủ cho doanh nghiệp.
+
+---
+
+## PHU LỤC
+
+### A. Dependencies
+```xml
+<!-- pom.xml -->
+<dependencies>
+    <dependency>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-controls</artifactId>
+        <version>17.0.2</version>
+    </dependency>
+    <dependency>
+        <groupId>com.github.sarxos</groupId>
+        <artifactId>webcam-capture</artifactId>
+        <version>0.3.12</version>
+    </dependency>
+</dependencies>
+```
+
+### B. System Requirements
+- Java 8 hoặc cao hơn
+- JavaFX SDK
+- Webcam (cho video call)
+- Microphone (cho voice call)
+- Network: LAN connection
+- OS: Windows, macOS, Linux
+
+### C. Port Usage Summary
+| Service | Port Range | Protocol |
+|---------|-----------|----------|
+| Discovery | 8889 | TCP |
+| Chat Server | 8888-9887 | TCP |
+| File Server | 8890-9889 | TCP |
+| Voice Call | 9000-9999 | TCP |
+| Video Stream | 9500-10499 | TCP |
+| Video Audio | 9600-10599 | TCP |
+
+---
+
+**Tác giả**: Đỗ Quốc Phong
+**Ngày**: 02/11/2025
+**Version**: 1.0

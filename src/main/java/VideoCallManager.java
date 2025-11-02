@@ -19,6 +19,7 @@ public class VideoCallManager {
     private static final int BUFFER_SIZE = 1024;
     private static final Dimension VIDEO_SIZE = new Dimension(640, 480);
     private static final int FPS = 15;
+    private static final int FRAME_DELAY = 1000 / FPS;
 
     private ServerSocket videoServer;
     private ServerSocket audioServer;
@@ -57,6 +58,7 @@ public class VideoCallManager {
     }
 
     public void startVideoServer() {
+        // Server video
         new Thread(() -> {
             try {
                 videoServer = new ServerSocket(myVideoPort);
@@ -67,11 +69,14 @@ public class VideoCallManager {
                     System.out.println("📹 New video connection from: " + clientSocket.getInetAddress());
                     handleIncomingVideoCall(clientSocket);
                 }
+            } catch (SocketException e) {
+                System.out.println("📹 Video server stopped");
             } catch (IOException e) {
-                System.out.println("📹 Video server stopped: " + e.getMessage());
+                System.err.println("❌ Video server error: " + e.getMessage());
             }
         }).start();
 
+        // Server audio
         new Thread(() -> {
             try {
                 audioServer = new ServerSocket(myAudioPort);
@@ -85,8 +90,10 @@ public class VideoCallManager {
                         startAudioStreaming();
                     }
                 }
+            } catch (SocketException e) {
+                System.out.println("🎤 Audio server stopped");
             } catch (IOException e) {
-                System.out.println("🎤 Audio server stopped: " + e.getMessage());
+                System.err.println("❌ Audio server error: " + e.getMessage());
             }
         }).start();
     }
@@ -100,37 +107,41 @@ public class VideoCallManager {
     }
 
     private void handleIncomingVideoCall(Socket socket) {
-        try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            String message = reader.readLine();
+        new Thread(() -> {
+            try {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                String message = reader.readLine();
 
-            if (message != null && message.startsWith("VIDEO_CALL:")) {
-                String caller = message.split(":")[1];
-                System.out.println("📹 Incoming video call from: " + caller);
+                if (message != null && message.startsWith("VIDEO_CALL:")) {
+                    String caller = message.split(":")[1];
+                    System.out.println("📹 Incoming video call from: " + caller);
 
-                this.videoSocket = socket;
+                    this.videoSocket = socket;
 
-                if (callListener != null) {
-                    callListener.onIncomingVideoCall(caller);
+                    if (callListener != null) {
+                        callListener.onIncomingVideoCall(caller);
+                    }
                 }
+            } catch (IOException e) {
+                System.err.println("❌ Error handling incoming video call: " + e.getMessage());
             }
-        } catch (IOException e) {
-            System.err.println("❌ Error handling incoming video call: " + e.getMessage());
-        }
+        }).start();
     }
 
     public void acceptVideoCall() {
         if (videoSocket != null && !videoSocket.isClosed()) {
             try {
+                // Gửi response trước
                 PrintWriter writer = new PrintWriter(videoSocket.getOutputStream(), true);
                 writer.println("VIDEO_CALL_ACCEPTED:" + currentUser);
-
                 System.out.println("✅ Sent video call acceptance");
 
-                // Khởi tạo webcam và bắt đầu streaming
+                // Khởi động webcam và streaming
                 if (initializeWebcam()) {
+                    isVideoCallActive.set(true);
+
+                    // Bắt đầu streaming ngay sau khi gửi response
                     startVideoStreaming();
-                    startAudioStreaming();
 
                     if (callListener != null) {
                         callListener.onCallAccepted();
@@ -185,23 +196,36 @@ public class VideoCallManager {
             // Kết nối video socket
             System.out.println("🔗 Connecting to video port...");
             videoSocket = new Socket(peerIp, peerVideoPort);
-            videoSocket.setSoTimeout(5000); // 5 second timeout
+            videoSocket.setSoTimeout(30000); // 30s timeout
 
             PrintWriter writer = new PrintWriter(videoSocket.getOutputStream(), true);
             writer.println("VIDEO_CALL:" + currentUser);
-            System.out.println("✅ Video connection established");
+            System.out.println("✅ Video connection established, waiting for acceptance...");
 
-            // Kết nối audio socket
+            // ĐỢI RESPONSE TỪ NGƯỜI NGHE
+            BufferedReader reader = new BufferedReader(new InputStreamReader(videoSocket.getInputStream()));
+            String response = reader.readLine();
+
+            if (response == null || !response.startsWith("VIDEO_CALL_ACCEPTED:")) {
+                System.err.println("❌ Video call rejected or timeout");
+                videoSocket.close();
+                return false;
+            }
+
+            System.out.println("✅ Video call accepted: " + response);
+
+            // Kết nối audio socket SAU KHI ĐƯỢC ACCEPT
             System.out.println("🔗 Connecting to audio port...");
             audioSocket = new Socket(peerIp, peerAudioPort);
             audioSocket.setSoTimeout(5000);
             System.out.println("✅ Audio connection established");
 
-            // Khởi tạo webcam
+            // Khởi động webcam và streaming
             if (initializeWebcam()) {
+                isVideoCallActive.set(true);
                 startVideoStreaming();
                 startAudioStreaming();
-                System.out.println("✅ Video call started successfully with " + peerIp);
+                System.out.println("✅ Video call started successfully");
                 return true;
             } else {
                 System.err.println("❌ Failed to initialize webcam");
@@ -216,31 +240,48 @@ public class VideoCallManager {
         }
     }
 
+    public void connectAudioSocket(String peerIp, int peerAudioPort) {
+        new Thread(() -> {
+            try {
+                System.out.println("🔗 Receiver connecting to audio port: " + peerAudioPort);
+                audioSocket = new Socket(peerIp, peerAudioPort);
+                audioSocket.setSoTimeout(5000);
+
+                if (isVideoCallActive.get()) {
+                    startAudioStreaming();
+                    System.out.println("✅ Receiver audio streaming started");
+                }
+            } catch (IOException e) {
+                System.err.println("❌ Failed to connect audio socket: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    public void setVideoViews(ImageView localView, ImageView remoteView) {
+        this.localVideoView = localView;
+        this.remoteVideoView = remoteView;
+        System.out.println("✅ Video views set - Local: " + (localView != null ? "✓" : "✗") +
+                ", Remote: " + (remoteView != null ? "✓" : "✗"));
+    }
+
     private boolean initializeWebcam() {
         try {
             closeWebcam();
 
             webcam = Webcam.getDefault();
             if (webcam != null) {
-                // Kiểm tra các resolutions có sẵn
                 Dimension[] resolutions = webcam.getViewSizes();
                 System.out.println("📹 Available webcam resolutions: " + resolutions.length);
-                for (Dimension res : resolutions) {
-                    System.out.println("  - " + res.width + "x" + res.height);
-                }
 
-                // Thử đặt resolution
                 try {
                     webcam.setViewSize(VIDEO_SIZE);
-                    System.out.println("📹 Set resolution to: " + VIDEO_SIZE);
+                    System.out.println("📹 Set resolution to: " + VIDEO_SIZE.width + "x" + VIDEO_SIZE.height);
                 } catch (Exception e) {
-                    System.err.println("❌ Cannot set resolution, using default");
-                    // Sử dụng resolution mặc định nếu không được
+                    System.out.println("⚠️ Could not set resolution: " + e.getMessage());
                 }
 
                 webcam.open();
                 System.out.println("✅ Webcam opened: " + webcam.getName());
-                System.out.println("📹 Current resolution: " + webcam.getViewSize());
                 return true;
             } else {
                 System.err.println("❌ No webcam found");
@@ -273,7 +314,6 @@ public class VideoCallManager {
         videoSendThread = new Thread(() -> {
             System.out.println("📤 Starting video sending thread");
             int frameCount = 0;
-            long startTime = System.currentTimeMillis();
 
             try {
                 OutputStream out = videoSocket.getOutputStream();
@@ -281,47 +321,33 @@ public class VideoCallManager {
 
                 while (isVideoCallActive.get() && webcam != null && webcam.isOpen()) {
                     try {
+                        long frameStartTime = System.currentTimeMillis();
+
                         BufferedImage image = webcam.getImage();
                         if (image != null) {
-                            frameCount++;
-
-                            // Hiển thị local video
-                            if (localVideoView != null) {
-                                Platform.runLater(() -> {
-                                    try {
-                                        Image fxImage = SwingFXUtils.toFXImage(image, null);
-                                        localVideoView.setImage(fxImage);
-                                    } catch (Exception e) {
-                                        System.err.println("❌ Error updating local video: " + e.getMessage());
-                                    }
-                                });
-                            }
-
-                            // Convert image to bytes
                             ByteArrayOutputStream baos = new ByteArrayOutputStream();
                             ImageIO.write(image, "jpg", baos);
-                            byte[] imageBytes = baos.toByteArray();
+                            byte[] imageData = baos.toByteArray();
 
-                            // Gửi kích thước trước
-                            dos.writeInt(imageBytes.length);
-                            // Gửi dữ liệu ảnh
-                            dos.write(imageBytes);
+                            dos.writeInt(imageData.length);
+                            dos.write(imageData);
                             dos.flush();
 
-                            // Log mỗi 10 frames
-                            if (frameCount % 10 == 0) {
-                                long elapsed = System.currentTimeMillis() - startTime;
-                                double fps = (frameCount * 1000.0) / elapsed;
-                                System.out.println("📤 Sent frame " + frameCount + " (" + imageBytes.length + " bytes, FPS: " + String.format("%.1f", fps) + ")");
+                            frameCount++;
+                            if (frameCount % 30 == 0) {
+                                System.out.println("📤 Sent " + frameCount + " frames");
                             }
+                        }
 
-                            // Giới hạn FPS
-                            Thread.sleep(1000 / FPS);
+                        long frameTime = System.currentTimeMillis() - frameStartTime;
+                        long sleepTime = FRAME_DELAY - frameTime;
+                        if (sleepTime > 0) {
+                            Thread.sleep(sleepTime);
                         }
                     } catch (InterruptedException e) {
                         break;
                     } catch (Exception e) {
-                        System.err.println("❌ Error in video sending: " + e.getMessage());
+                        System.err.println("❌ Error sending frame: " + e.getMessage());
                         break;
                     }
                 }
@@ -331,64 +357,49 @@ public class VideoCallManager {
                 System.out.println("📤 Video sending thread ended. Total frames: " + frameCount);
             }
         });
+        videoSendThread.setDaemon(true);
         videoSendThread.start();
 
         // Thread nhận video
         videoReceiveThread = new Thread(() -> {
             System.out.println("📥 Starting video receiving thread");
             int frameCount = 0;
-            long startTime = System.currentTimeMillis();
 
             try {
                 DataInputStream dis = new DataInputStream(videoSocket.getInputStream());
 
                 while (isVideoCallActive.get()) {
                     try {
-                        // Đọc kích thước frame
                         int imageSize = dis.readInt();
-                        if (imageSize <= 0) {
+                        if (imageSize <= 0 || imageSize > 5000000) {
                             System.err.println("❌ Invalid image size: " + imageSize);
                             break;
                         }
 
-                        // Đọc dữ liệu frame
-                        byte[] imageBytes = new byte[imageSize];
-                        int totalRead = 0;
-                        while (totalRead < imageSize) {
-                            int bytesRead = dis.read(imageBytes, totalRead, imageSize - totalRead);
-                            if (bytesRead == -1) {
-                                throw new EOFException("End of stream");
-                            }
-                            totalRead += bytesRead;
-                        }
+                        byte[] imageData = new byte[imageSize];
+                        dis.readFully(imageData);
 
-                        // Convert bytes thành image
-                        ByteArrayInputStream bais = new ByteArrayInputStream(imageBytes);
+                        ByteArrayInputStream bais = new ByteArrayInputStream(imageData);
                         BufferedImage image = ImageIO.read(bais);
 
                         if (image != null && remoteVideoView != null) {
-                            frameCount++;
+                            Image fxImage = SwingFXUtils.toFXImage(image, null);
                             Platform.runLater(() -> {
-                                try {
-                                    Image fxImage = SwingFXUtils.toFXImage(image, null);
+                                if (remoteVideoView != null) {
                                     remoteVideoView.setImage(fxImage);
-                                } catch (Exception e) {
-                                    System.err.println("❌ Error updating remote video: " + e.getMessage());
                                 }
                             });
 
-                            // Log mỗi 10 frames
-                            if (frameCount % 10 == 0) {
-                                long elapsed = System.currentTimeMillis() - startTime;
-                                double fps = (frameCount * 1000.0) / elapsed;
-                                System.out.println("📥 Received frame " + frameCount + " (" + imageSize + " bytes, FPS: " + String.format("%.1f", fps) + ")");
+                            frameCount++;
+                            if (frameCount % 30 == 0) {
+                                System.out.println("📥 Received " + frameCount + " frames");
                             }
                         }
                     } catch (EOFException | SocketException e) {
-                        System.err.println("❌ Video stream ended: " + e.getMessage());
+                        System.out.println("📥 Remote closed connection");
                         break;
                     } catch (Exception e) {
-                        System.err.println("❌ Error in video receiving: " + e.getMessage());
+                        System.err.println("❌ Error receiving frame: " + e.getMessage());
                         break;
                     }
                 }
@@ -398,7 +409,36 @@ public class VideoCallManager {
                 System.out.println("📥 Video receiving thread ended. Total frames: " + frameCount);
             }
         });
+        videoReceiveThread.setDaemon(true);
         videoReceiveThread.start();
+
+        // Thread hiển thị local video
+        new Thread(() -> {
+            System.out.println("📹 Starting local video display thread");
+
+            try {
+                while (isVideoCallActive.get() && webcam != null && webcam.isOpen()) {
+                    try {
+                        BufferedImage image = webcam.getImage();
+                        if (image != null && localVideoView != null) {
+                            Image fxImage = SwingFXUtils.toFXImage(image, null);
+                            Platform.runLater(() -> {
+                                if (localVideoView != null) {
+                                    localVideoView.setImage(fxImage);
+                                }
+                            });
+                        }
+                        Thread.sleep(FRAME_DELAY);
+                    } catch (InterruptedException e) {
+                        break;
+                    } catch (Exception e) {
+                        System.err.println("❌ Error displaying local video: " + e.getMessage());
+                    }
+                }
+            } finally {
+                System.out.println("📹 Local video display thread ended");
+            }
+        }).start();
     }
 
     private void startAudioStreaming() {
@@ -415,17 +455,18 @@ public class VideoCallManager {
 
             System.out.println("🎤 Audio devices initialized");
 
-            // Audio sending
+            // Thread gửi audio
             audioSendThread = new Thread(() -> {
                 System.out.println("🎤 Starting audio sending");
                 try {
                     OutputStream out = audioSocket.getOutputStream();
                     byte[] buffer = new byte[BUFFER_SIZE];
 
-                    while (isVideoCallActive.get()) {
+                    while (isVideoCallActive.get() && microphone.isOpen()) {
                         int bytesRead = microphone.read(buffer, 0, buffer.length);
                         if (bytesRead > 0) {
                             out.write(buffer, 0, bytesRead);
+                            out.flush();
                         }
                     }
                 } catch (IOException e) {
@@ -433,17 +474,18 @@ public class VideoCallManager {
                 }
                 System.out.println("🎤 Audio sending ended");
             });
+            audioSendThread.setDaemon(true);
             audioSendThread.start();
 
-            // Audio receiving
+            // Thread nhận audio
             audioReceiveThread = new Thread(() -> {
                 System.out.println("🎧 Starting audio receiving");
                 try {
                     InputStream in = audioSocket.getInputStream();
                     byte[] buffer = new byte[BUFFER_SIZE];
 
-                    while (isVideoCallActive.get()) {
-                        int bytesRead = in.read(buffer, 0, buffer.length);
+                    while (isVideoCallActive.get() && speaker.isOpen()) {
+                        int bytesRead = in.read(buffer);
                         if (bytesRead > 0) {
                             speaker.write(buffer, 0, bytesRead);
                         }
@@ -453,6 +495,7 @@ public class VideoCallManager {
                 }
                 System.out.println("🎧 Audio receiving ended");
             });
+            audioReceiveThread.setDaemon(true);
             audioReceiveThread.start();
 
         } catch (LineUnavailableException e) {
@@ -469,23 +512,44 @@ public class VideoCallManager {
         isVideoCallActive.set(false);
 
         try {
-            if (videoSendThread != null) videoSendThread.interrupt();
-            if (videoReceiveThread != null) videoReceiveThread.interrupt();
-            if (audioSendThread != null) audioSendThread.interrupt();
-            if (audioReceiveThread != null) audioReceiveThread.interrupt();
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        try {
+            if (videoSendThread != null) {
+                videoSendThread.interrupt();
+            }
+            if (videoReceiveThread != null) {
+                videoReceiveThread.interrupt();
+            }
+            if (audioSendThread != null) {
+                audioSendThread.interrupt();
+            }
+            if (audioReceiveThread != null) {
+                audioReceiveThread.interrupt();
+            }
 
             closeWebcam();
 
-            if (microphone != null) {
+            if (microphone != null && microphone.isOpen()) {
                 microphone.stop();
                 microphone.close();
             }
-            if (speaker != null) {
+            if (speaker != null && speaker.isOpen()) {
                 speaker.stop();
                 speaker.close();
             }
-            if (videoSocket != null) videoSocket.close();
-            if (audioSocket != null) audioSocket.close();
+            if (videoSocket != null && !videoSocket.isClosed()) {
+                videoSocket.close();
+            }
+            if (audioSocket != null && !audioSocket.isClosed()) {
+                audioSocket.close();
+            }
+
+            localVideoView = null;
+            remoteVideoView = null;
 
             if (callListener != null) {
                 callListener.onCallEnded();
@@ -504,8 +568,12 @@ public class VideoCallManager {
     public void shutdown() {
         endVideoCall();
         try {
-            if (videoServer != null) videoServer.close();
-            if (audioServer != null) audioServer.close();
+            if (videoServer != null && !videoServer.isClosed()) {
+                videoServer.close();
+            }
+            if (audioServer != null && !audioServer.isClosed()) {
+                audioServer.close();
+            }
         } catch (IOException e) {
             System.err.println("❌ Error shutting down: " + e.getMessage());
         }

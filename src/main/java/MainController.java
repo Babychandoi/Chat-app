@@ -1,6 +1,5 @@
 import javafx.application.Platform;
 import javafx.stage.Stage;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class MainController {
     private Stage primaryStage;
