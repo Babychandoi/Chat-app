@@ -22,6 +22,10 @@ public class CallManager {
     private String incomingCaller;
     private boolean isVideoCall;
 
+    // Thêm các biến để lưu video views
+    private ImageView localVideoView;
+    private ImageView remoteVideoView;
+
     public CallManager(MainController mainController) {
         this.mainController = mainController;
     }
@@ -83,6 +87,8 @@ public class CallManager {
                     if (incomingCallStage != null) {
                         incomingCallStage.close();
                     }
+                    // TỰ ĐỘNG HIỂN THỊ GIAO DIỆN VIDEO CALL CHO BÊN NHẬN
+                    showVideoCallWindow(incomingCaller, false);
                 });
             }
 
@@ -102,6 +108,9 @@ public class CallManager {
                     if (videoCallStage != null) {
                         videoCallStage.close();
                     }
+                    // Reset video views
+                    localVideoView = null;
+                    remoteVideoView = null;
                 });
             }
         });
@@ -158,75 +167,183 @@ public class CallManager {
             return;
         }
 
-        // Show video call window
-        videoCallStage = new Stage();
-        videoCallStage.initModality(Modality.NONE);
-        videoCallStage.setTitle("Video Call - " + target);
+        // Show video call window for CALLER
+        showVideoCallWindow(target, true);
 
-        BorderPane videoPane = new BorderPane();
-        videoPane.setStyle("-fx-background-color: #1C1C1E;");
-
-        // Remote video (main)
-        ImageView remoteVideoView = new ImageView();
-        remoteVideoView.setPreserveRatio(true);
-        remoteVideoView.setFitWidth(800);
-        remoteVideoView.setFitHeight(600);
-
-        // Local video (small overlay)
-        ImageView localVideoView = new ImageView();
-        localVideoView.setPreserveRatio(true);
-        localVideoView.setFitWidth(200);
-        localVideoView.setFitHeight(150);
-        localVideoView.setStyle("-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.5), 10, 0, 0, 0);");
-
-        StackPane localVideoPane = new StackPane(localVideoView);
-        localVideoPane.setPadding(new Insets(20));
-        localVideoPane.setAlignment(Pos.TOP_RIGHT);
-        StackPane.setAlignment(localVideoView, Pos.TOP_RIGHT);
-
-        StackPane videoStack = new StackPane(remoteVideoView, localVideoPane);
-        videoPane.setCenter(videoStack);
-
-        // Controls
-        HBox controls = new HBox(20);
-        controls.setPadding(new Insets(20));
-        controls.setAlignment(Pos.CENTER);
-        controls.setStyle("-fx-background-color: rgba(0,0,0,0.5);");
-
-        Button endCallBtn = new Button("🔴 Kết thúc");
-        endCallBtn.setStyle("-fx-background-color: #FF3B30; -fx-text-fill: white; " +
-                "-fx-font-size: 16; -fx-font-weight: bold; -fx-padding: 12 30; " +
-                "-fx-background-radius: 25; -fx-cursor: hand;");
-        endCallBtn.setOnAction(e -> {
-            videoCallManager.endVideoCall();
-            videoCallStage.close();
-        });
-
-        controls.getChildren().add(endCallBtn);
-        videoPane.setBottom(controls);
-
-        Scene scene = new Scene(videoPane, 800, 600);
-        videoCallStage.setScene(scene);
-        videoCallStage.setOnCloseRequest(e -> videoCallManager.endVideoCall());
-
-        // Start video call
+        // Đợi một chút để giao diện được khởi tạo hoàn toàn
         new Thread(() -> {
-            boolean success = videoCallManager.startVideoCall(
-                    peer.getIp(),
-                    peer.getVideoPort(),
-                    peer.getVideoAudioPort(),
-                    localVideoView,
-                    remoteVideoView
-            );
-            if (!success) {
+            try {
+                Thread.sleep(500); // Đợi 500ms để giao diện được tạo
+
                 Platform.runLater(() -> {
-                    showAlert("Lỗi", "Không thể kết nối video call!");
-                    videoCallStage.close();
+                    // DEBUG: Kiểm tra video views
+                    debugVideoViews();
+
+                    if (!areVideoViewsReady()) {
+                        showAlert("Lỗi", "Video views chưa sẵn sàng!");
+                        return;
+                    }
+
+                    boolean success = videoCallManager.startVideoCall(
+                            peer.getIp(),
+                            peer.getVideoPort(),
+                            peer.getVideoAudioPort(),
+                            localVideoView,
+                            remoteVideoView
+                    );
+                    if (!success) {
+                        showAlert("Lỗi", "Không thể kết nối video call!");
+                        if (videoCallStage != null) {
+                            videoCallStage.close();
+                        }
+                    } else {
+                        System.out.println("✅ Video call connected to: " + target);
+                    }
                 });
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }).start();
+    }
 
-        videoCallStage.show();
+    // Phương thức HIỂN THỊ GIAO DIỆN VIDEO CALL (dùng cho cả bên gọi và bên nhận)
+    private void showVideoCallWindow(String peer, boolean isCaller) {
+        Platform.runLater(() -> {
+            // Đóng cửa sổ video call cũ nếu có
+            if (videoCallStage != null) {
+                videoCallStage.close();
+            }
+
+            videoCallStage = new Stage();
+            videoCallStage.initModality(Modality.NONE);
+            videoCallStage.setTitle("Video Call - " + peer + (isCaller ? " (Đang gọi)" : " (Đang nhận)"));
+            videoCallStage.setOnCloseRequest(e -> {
+                videoCallManager.endVideoCall();
+            });
+
+            BorderPane videoPane = new BorderPane();
+            videoPane.setStyle("-fx-background-color: #1C1C1E;");
+
+            // Remote video (main) - video của người kia
+            remoteVideoView = new ImageView();
+            remoteVideoView.setPreserveRatio(true);
+            remoteVideoView.setFitWidth(800);
+            remoteVideoView.setFitHeight(600);
+            remoteVideoView.setStyle("-fx-background-color: #2C2C2E;");
+
+            // Local video (small overlay) - video của mình
+            localVideoView = new ImageView();
+            localVideoView.setPreserveRatio(true);
+            localVideoView.setFitWidth(200);
+            localVideoView.setFitHeight(150);
+            localVideoView.setStyle("-fx-background-color: #3C3C3E; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.5), 10, 0, 0, 0);");
+
+            StackPane localVideoPane = new StackPane(localVideoView);
+            localVideoPane.setPadding(new Insets(20));
+            localVideoPane.setAlignment(Pos.TOP_RIGHT);
+            StackPane.setAlignment(localVideoView, Pos.TOP_RIGHT);
+
+            StackPane videoStack = new StackPane(remoteVideoView, localVideoPane);
+            videoPane.setCenter(videoStack);
+
+            // Info panel
+            VBox infoPanel = new VBox(10);
+            infoPanel.setPadding(new Insets(15));
+            infoPanel.setAlignment(Pos.CENTER);
+            infoPanel.setStyle("-fx-background-color: rgba(0,0,0,0.7);");
+
+            Label callInfo = new Label("Video call với: " + peer);
+            callInfo.setStyle("-fx-text-fill: white; -fx-font-size: 16; -fx-font-weight: bold;");
+
+            Label statusLabel = new Label(isCaller ? "Đang kết nối..." : "Đã kết nối");
+            statusLabel.setStyle("-fx-text-fill: #34C759; -fx-font-size: 14;");
+
+            infoPanel.getChildren().addAll(callInfo, statusLabel);
+            videoPane.setTop(infoPanel);
+
+            // Controls
+            HBox controls = new HBox(20);
+            controls.setPadding(new Insets(20));
+            controls.setAlignment(Pos.CENTER);
+            controls.setStyle("-fx-background-color: rgba(0,0,0,0.5);");
+
+            Button endCallBtn = new Button("🔴 Kết thúc");
+            endCallBtn.setStyle("-fx-background-color: #FF3B30; -fx-text-fill: white; " +
+                    "-fx-font-size: 16; -fx-font-weight: bold; -fx-padding: 12 30; " +
+                    "-fx-background-radius: 25; -fx-cursor: hand;");
+            endCallBtn.setOnAction(e -> {
+                videoCallManager.endVideoCall();
+                videoCallStage.close();
+            });
+
+            // Nút tắt/bật microphone (tùy chọn)
+            Button muteBtn = new Button("🎤");
+            muteBtn.setStyle("-fx-background-color: #8E8E93; -fx-text-fill: white; " +
+                    "-fx-font-size: 16; -fx-font-weight: bold; -fx-padding: 12 20; " +
+                    "-fx-background-radius: 25; -fx-cursor: hand;");
+            muteBtn.setOnAction(e -> {
+                showAlert("Thông báo", "Tính năng tắt microphone đang phát triển");
+            });
+
+            // Nút tắt/bật camera (tùy chọn)
+            Button cameraBtn = new Button("📷");
+            cameraBtn.setStyle("-fx-background-color: #8E8E93; -fx-text-fill: white; " +
+                    "-fx-font-size: 16; -fx-font-weight: bold; -fx-padding: 12 20; " +
+                    "-fx-background-radius: 25; -fx-cursor: hand;");
+            cameraBtn.setOnAction(e -> {
+                showAlert("Thông báo", "Tính năng tắt camera đang phát triển");
+            });
+
+            controls.getChildren().addAll(muteBtn, cameraBtn, endCallBtn);
+            videoPane.setBottom(controls);
+
+            Scene scene = new Scene(videoPane, 800, 700);
+            videoCallStage.setScene(scene);
+
+            // Cập nhật trạng thái sau 2 giây nếu là bên gọi
+            if (isCaller) {
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(2000);
+                        Platform.runLater(() -> {
+                            statusLabel.setText("✅ Đã kết nối");
+                        });
+                    } catch (InterruptedException ex) {
+                        ex.printStackTrace();
+                    }
+                }).start();
+            }
+
+            videoCallStage.show();
+
+            System.out.println("📹 Video call window opened for: " + peer + " (isCaller: " + isCaller + ")");
+
+            // Nếu là bên nhận, bắt đầu streaming ngay lập tức
+            if (!isCaller) {
+                startVideoStreamingForReceiver(peer);
+            }
+        });
+    }
+
+    private void startVideoStreamingForReceiver(String peer) {
+        new Thread(() -> {
+            try {
+                // Đợi một chút để đảm bảo webcam đã được khởi tạo
+                Thread.sleep(1000);
+
+                // Kiểm tra xem video views có tồn tại không
+                if (localVideoView != null && remoteVideoView != null) {
+                    System.out.println("🎬 Starting video streaming for receiver...");
+
+                    // VideoCallManager đã tự động start streaming khi accept call
+                    // Chúng ta chỉ cần đảm bảo các view được kết nối đúng
+                } else {
+                    System.err.println("❌ Video views not initialized for receiver");
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     private void showIncomingCallDialog(String caller, boolean isVideoCall) {
@@ -284,7 +401,7 @@ public class CallManager {
             acceptBtn.setOnAction(e -> {
                 if (isVideoCall) {
                     videoCallManager.acceptVideoCall();
-                    // Video call UI will be shown from VideoCallManager
+                    // Giao diện video call sẽ được hiển thị trong callback onCallAccepted
                 } else {
                     voiceCallManager.acceptCall();
                     showVoiceCallDialog(caller); // Show voice call UI
@@ -320,6 +437,8 @@ public class CallManager {
             Scene scene = new Scene(dialogBox, 350, 300);
             incomingCallStage.setScene(scene);
             incomingCallStage.show();
+
+            System.out.println("📞 Incoming call dialog shown for: " + caller + " (video: " + isVideoCall + ")");
         });
     }
 
@@ -411,7 +530,8 @@ public class CallManager {
 
     public void handleVideoCallAccepted(String from) {
         Platform.runLater(() -> {
-            System.out.println("Video call accepted by " + from);
+            System.out.println("✅ Video call accepted by " + from);
+            // Không cần hiển thị alert vì giao diện đã được mở tự động
         });
     }
 
@@ -441,9 +561,38 @@ public class CallManager {
         if (videoCallManager != null) {
             videoCallManager.shutdown();
         }
+
+        // Đóng tất cả các cửa sổ
+        if (incomingCallStage != null) {
+            incomingCallStage.close();
+        }
+        if (voiceCallStage != null) {
+            voiceCallStage.close();
+        }
+        if (videoCallStage != null) {
+            videoCallStage.close();
+        }
     }
 
     // Getters
     public VoiceCallManager getVoiceCallManager() { return voiceCallManager; }
     public VideoCallManager getVideoCallManager() { return videoCallManager; }
+    // Thêm các phương thức này thay cho 2 getter cũ
+    public boolean areVideoViewsReady() {
+        return localVideoView != null && remoteVideoView != null;
+    }
+
+    public void debugVideoViews() {
+        System.out.println("🎯 Video Views Debug:");
+        System.out.println("  - Local Video View: " + (localVideoView != null ? "✓ Ready" : "✗ Null"));
+        System.out.println("  - Remote Video View: " + (remoteVideoView != null ? "✓ Ready" : "✗ Null"));
+
+        if (localVideoView != null) {
+            System.out.println("  - Local View Size: " + localVideoView.getFitWidth() + "x" + localVideoView.getFitHeight());
+        }
+        if (remoteVideoView != null) {
+            System.out.println("  - Remote View Size: " + remoteVideoView.getFitWidth() + "x" + remoteVideoView.getFitHeight());
+        }
+    }
+
 }
