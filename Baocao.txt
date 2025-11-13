@@ -16,12 +16,14 @@
 - Giao diện người dùng thân thiện, hiện đại
 
 ### 1.3. Công nghệ sử dụng
-- **Ngôn ngữ**: Java 8+
-- **GUI Framework**: JavaFX
-- **Video Capture**: Webcam Capture API (Sarxos)
-- **Audio**: Java Sound API
+- **Ngôn ngữ**: Java 17
+- **GUI Framework**: JavaFX 17.0.2
+- **Video Capture**: Webcam Capture API (Sarxos 0.3.12)
+- **Audio**: Java Sound API (với auto-format detection)
 - **Networking**: Java Socket Programming
-- **Concurrency**: Java Concurrent HashMap, Threads
+- **Concurrency**: Java Concurrent Collections, ExecutorService, AtomicBoolean
+- **Build Tool**: Maven
+- **Dependencies**: Gson, SLF4J
 
 ---
 
@@ -61,23 +63,30 @@
 
 #### 2.2.2. AuthManager
 - Xác thực người dùng (login/register)
-- Lưu trữ thông tin tài khoản trong file `users.txt`
-- Giao diện đăng nhập/đăng ký hiện đại
+- Lưu trữ thông tin tài khoản trong file `users.txt` (format: username:password)
+- Giao diện đăng nhập/đăng ký hiện đại với gradient background
+- Tích hợp SessionLockManager để ngăn đăng nhập trùng lặp
 
 #### 2.2.3. ChatManager
-- Quản lý giao diện chat chính
-- Hiển thị danh sách contacts và nhóm
+- Quản lý giao diện chat chính với modern UI
+- Hiển thị danh sách contacts và nhóm (với online indicators)
 - Xử lý gửi/nhận tin nhắn text và file
-- Load/save chat history
-- Tạo và quản lý nhóm chat
+- Image preview cho file ảnh (double-click để xem full size)
+- Typing indicators (1-1 và nhóm)
+- Load/save chat history (format: [timestamp] sender: message)
+- Tạo và quản lý nhóm chat (thêm/xóa thành viên, rời nhóm)
 
 #### 2.2.4. NetworkManager
-- **Discovery Server** (Port 8889): Tự động phát hiện peers trên LAN
-- **Chat Server** (Port động): Nhận kết nối chat từ peers
-- **File Server** (Port động): Xử lý truyền file
-- Quản lý kết nối P2P với các peer
-- Đồng bộ hóa nhóm chat giữa các thành viên
-- Routing messages (direct, group, file)
+- **Discovery Server** (Port 11000-11049): Tự động phát hiện peers trên LAN
+  - Scan thông minh: Ping trước để tìm active hosts, sau đó scan discovery ports
+  - Chỉ scan 50 ports (11000-11049) thay vì 1000 ports để tối ưu tốc độ
+  - Peer notification: Tự động thông báo peer mới cho các peer hiện có
+- **Chat Server** (Port động: 8888-9887): Nhận kết nối chat từ peers
+- **File Server** (Port động: 8890-9889): Xử lý truyền file
+- Quản lý kết nối P2P với các peer (PeerConnection)
+- Đồng bộ hóa nhóm chat giữa các thành viên (GROUP_SYNC)
+- Routing messages (direct, group, file, typing indicators)
+- Heartbeat checker: Kiểm tra peer offline định kỳ (10s)
 
 #### 2.2.5. CallManager
 - Quản lý UI của voice/video call
@@ -92,11 +101,13 @@
 - Format: 16kHz, 16-bit, mono
 
 #### 2.2.7. VideoCallManager
-- Video Server (Port 9500+)
-- Audio Server cho video call (Port 9600+)
+- Video Server (Port 9500-10499)
+- Audio Server cho video call (Port 9600-10599)
 - Capture webcam sử dụng Sarxos Webcam API
 - Streaming video: 640x480, 15 FPS, JPEG compression
-- Đồng bộ audio/video streaming
+- Đồng bộ audio/video streaming (2 sockets riêng biệt)
+- Auto-format detection cho audio (little-endian → big-endian → unsigned)
+- Cleanup hoàn toàn resources khi kết thúc call
 
 ---
 
@@ -115,19 +126,25 @@
 
 ### 3.2. Peer Discovery
 **Cơ chế hoạt động:**
-1. Khi login, app scan toàn bộ subnet (x.x.x.1 - x.x.x.254)
-2. Gửi message `ANNOUNCE` đến port 8889 của mỗi IP
-3. Peer nhận được sẽ response với thông tin của mình
-4. Lưu peer info vào `ConcurrentHashMap<String, PeerInfo>`
-5. Tự động refresh danh sách contacts
+1. Khi login, app thực hiện 2 bước scan:
+   - **Bước 1**: Ping scan (ICMP + TCP 445/135) để tìm active hosts (timeout 8s)
+   - **Bước 2**: Scan discovery ports (11000-11049) trên các active hosts (timeout 60s)
+2. Ưu tiên scan localhost trước (cùng máy)
+3. Gửi message `ANNOUNCE` đến discovery port của mỗi IP
+4. Peer nhận được sẽ response với thông tin của mình (`PEER:`)
+5. Peer mới nhận thông tin về tất cả peers hiện có (`PEER_NOTIFY`)
+6. Lưu peer info vào `ConcurrentHashMap<String, PeerInfo>`
+7. Tự động refresh danh sách contacts
+8. Heartbeat checker kiểm tra peer offline mỗi 10 giây
 
 **Thông tin peer bao gồm:**
 - IP address
-- Chat port
-- File port
-- Voice port
-- Video port
-- Video audio port
+- Chat port (8888-9887)
+- File port (8890-9889)
+- Voice port (9000-9999)
+- Video port (9500-10499)
+- Video audio port (9600-10599)
+- Discovery port (11000-11049)
 
 ### 3.3. Chat 1-1
 **Gửi tin nhắn:**
@@ -162,60 +179,457 @@ member1,member2,member3
 
 ### 3.5. Chia sẻ File
 **Cơ chế:**
-1. Người gửi copy file vào `shared_files/` với tên unique
+1. Người gửi copy file vào `shared_files/` với tên unique (timestamp_filename)
 2. Gửi metadata đến peer: `FILE::filename|size|senderIp|uniqueFilename`
 3. Người nhận tự động download file từ File Server của người gửi
 4. Request format: `REQUEST_FILE:uniqueFilename`
+5. Nếu file đã tồn tại, skip download
 
 **Giới hạn:**
 - Max file size: 50MB
 - Hỗ trợ mọi loại file
-- Hiển thị icon theo extension
-- Download on-demand
+- Hiển thị icon theo extension (🖼️ ảnh, 📄 PDF, 📝 Word, etc.)
+- Image preview: Hiển thị preview ảnh trong chat (max 350x350)
+- Double-click ảnh để xem full size
+- Download on-demand với file chooser
 
 ### 3.6. Voice Call
 **Khởi tạo cuộc gọi:**
-1. Caller kết nối đến Voice Server của callee
+1. Caller kết nối đến Voice Server của callee (port 9000+)
 2. Gửi `VOICE_CALL:caller`
-3. Callee nhận incoming call dialog
+3. Callee nhận incoming call dialog (auto-reject sau 30s)
 4. Accept/Reject
+5. Nếu video call đang active, tự động reject voice call
 
 **Audio Streaming:**
 - Capture từ microphone: TargetDataLine
 - Playback qua speaker: SourceDataLine
+- Format: 16kHz, 16-bit, mono, signed little-endian (Windows compatible)
 - Buffer size: 1024 bytes
+- Noise gate: RMS threshold 500 (chỉ gửi khi có tiếng nói)
+- Volume control: Tự động giảm -20dB để tránh echo
 - Bidirectional streaming qua socket
 - Real-time với latency thấp
+- Retry mechanism: Thử mở microphone tối đa 3 lần (tránh conflict với video call)
 
 ### 3.7. Video Call
 **Architecture:**
 - **2 sockets**: Video socket + Audio socket riêng biệt
-- Video: Port 9500+
-- Audio: Port 9600+
+- Video: Port 9500-10499
+- Audio: Port 9600-10599
+- Caller kết nối video trước, sau đó kết nối audio
+- Receiver nhận video call, sau đó kết nối audio socket đến caller
 
 **Video Streaming:**
-1. Capture từ webcam (640x480)
+1. Capture từ webcam (640x480) sử dụng Sarxos Webcam API
 2. Convert BufferedImage → JPEG
 3. Send qua DataOutputStream: `[size:4bytes][imageData]`
-4. FPS: 15 frames/second
-5. Hiển thị local video (overlay) + remote video (main)
+4. FPS: 15 frames/second (frame delay ~66ms)
+5. Hiển thị local video (200x150 overlay góc phải trên) + remote video (800x600 main)
+6. End signal: Gửi size = -1 để báo hiệu kết thúc
 
 **Audio Streaming:**
+- Auto-format detection: Thử little-endian → big-endian → unsigned
 - Tương tự voice call nhưng chạy song song với video
-- Đồng bộ hóa timing
+- Volume control: Tự động giảm -20dB
+- Đồng bộ hóa timing với video
+- Cleanup hoàn toàn: Đóng microphone, speaker, webcam, sockets
 
 **UI Features:**
 - Local video: 200x150 (overlay góc phải trên)
 - Remote video: 800x600 (main screen)
-- Controls: Mute, Camera toggle, End call
-- Call timer
-- Status indicators
+- Controls: Mute (🎤), Camera toggle (📷), End call (🔴)
+- Status indicators: "Đang kết nối..." → "✅ Đã kết nối"
+- Dark theme (#1C1C1E background)
+
+**Typing Indicators:**
+- Gửi `TYPING` khi bắt đầu gõ (1-1 chat)
+- Gửi `STOP_TYPING` khi dừng gõ hoặc gửi tin nhắn
+- Group typing: `GROUP_TYPING:groupName:username`
+- Auto-hide sau 5 giây nếu không nhận stop signal
+- Hiển thị: "username đang gõ..." hoặc "X người đang gõ..."
 
 ---
 
-## 4. GIAO THỨC TRUYỀN THÔNG
+## 4. GIAO THỨC TRUYỀN THÔNG VÀ SỬ DỤNG TCP/UDP
 
-### 4.1. Message Protocol
+### 4.1. Tổng quan về TCP và UDP trong ứng dụng
+
+Ứng dụng Chat P2P sử dụng **TCP (Transmission Control Protocol)** làm giao thức chính cho tất cả các dịch vụ mạng. **Ứng dụng KHÔNG sử dụng UDP** trong implementation hiện tại. Tất cả các kết nối mạng đều sử dụng `java.net.Socket` và `java.net.ServerSocket` (TCP), không có `java.net.DatagramSocket` (UDP) nào được sử dụng.
+
+Quyết định này dựa trên các yêu cầu về độ tin cậy, thứ tự dữ liệu và kiểm soát luồng của ứng dụng.
+
+#### 4.1.1. Tại sao chọn TCP thay vì UDP?
+
+**Ưu điểm của TCP phù hợp với ứng dụng:**
+- ✅ **Đảm bảo độ tin cậy**: Tất cả dữ liệu được đảm bảo gửi đến đích (ACK mechanism)
+- ✅ **Đảm bảo thứ tự**: Dữ liệu luôn được nhận đúng thứ tự gửi (sequence numbers)
+- ✅ **Kiểm soát luồng**: Tránh overflow buffer ở receiver (flow control)
+- ✅ **Kiểm soát tắc nghẽn**: Tự động điều chỉnh tốc độ gửi (congestion control)
+- ✅ **Kết nối có trạng thái**: Dễ quản lý session và cleanup resources
+
+**Nhược điểm của UDP không phù hợp:**
+- ❌ **Không đảm bảo delivery**: Có thể mất gói tin (không phù hợp cho chat, file transfer)
+- ❌ **Không đảm bảo thứ tự**: Gói tin có thể đến sai thứ tự (ảnh hưởng đến video/audio)
+- ❌ **Không có flow control**: Dễ gây overflow ở receiver
+- ❌ **Connectionless**: Khó quản lý state và cleanup
+
+#### 4.1.2. Kiến trúc TCP trong ứng dụng
+
+Ứng dụng sử dụng mô hình **Client-Server** với TCP, mỗi peer đóng vai trò vừa là client vừa là server:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    PEER A (Alice)                        │
+├─────────────────────────────────────────────────────────┤
+│  ┌──────────────┐         ┌──────────────┐              │
+│  │ TCP Server   │         │ TCP Client   │              │
+│  │ (Listen)     │         │ (Connect)    │              │
+│  │              │         │              │              │
+│  │ Port 8888    │◄───────►│ Port 8888    │              │
+│  │ (Chat)       │  TCP    │ (Chat)       │              │
+│  └──────────────┘         └──────────────┘              │
+│  ┌──────────────┐         ┌──────────────┐              │
+│  │ Port 8890    │         │ Port 8890    │              │
+│  │ (File)       │◄───────►│ (File)       │              │
+│  └──────────────┘         └──────────────┘              │
+└─────────────────────────────────────────────────────────┘
+         ▲                           ▲
+         │                           │
+         └─────────── TCP ───────────┘
+         │                           │
+         ▼                           ▼
+┌─────────────────────────────────────────────────────────┐
+│                    PEER B (Bob)                          │
+├─────────────────────────────────────────────────────────┤
+│  ┌──────────────┐         ┌──────────────┐              │
+│  │ TCP Server   │         │ TCP Client   │              │
+│  │ (Listen)     │         │ (Connect)    │              │
+│  └──────────────┘         └──────────────┘              │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 4.2. Sử dụng TCP cho các dịch vụ
+
+#### 4.2.1. TCP cho Peer Discovery (Port 11000-11049)
+
+**Cơ chế hoạt động:**
+1. **Server Socket**: Mỗi peer tạo `ServerSocket` trên discovery port để lắng nghe
+2. **Client Socket**: Peer mới tạo `Socket` để kết nối đến discovery port của peer khác
+3. **Three-way handshake**: TCP tự động thực hiện SYN → SYN-ACK → ACK
+4. **Gửi ANNOUNCE**: Sau khi kết nối thành công, gửi thông tin peer
+5. **Nhận PEER response**: Nhận thông tin peer và đóng kết nối
+
+**Tại sao dùng TCP cho Discovery:**
+- Đảm bảo thông tin discovery được gửi đến đúng đích
+- Có thể phát hiện peer offline ngay khi kết nối thất bại
+- Dễ xử lý timeout và retry
+
+**Flow:**
+```
+Peer A (New)                    Peer B (Existing)
+    |                                |
+    |-------- TCP Connect ---------->|
+    |         (SYN)                  |
+    |<-------- SYN-ACK --------------|
+    |-------- ACK ------------------>|
+    |                                |
+    |-------- ANNOUNCE:alice ------->|
+    |         (PrintWriter)          |
+    |<-------- PEER:bob:ports... ----|
+    |         (BufferedReader)       |
+    |-------- Close Socket --------->|
+    |                                |
+```
+
+#### 4.2.2. TCP cho Chat Messages (Port 8888-9887)
+
+**Kiến trúc persistent connection:**
+- Mỗi peer pair duy trì một TCP connection lâu dài
+- Connection được tái sử dụng cho nhiều messages
+- Chỉ tạo connection mới khi chưa có hoặc connection bị đóng
+
+**Ưu điểm:**
+- Giảm overhead của TCP handshake (chỉ 1 lần)
+- Giảm latency cho messages tiếp theo
+- Dễ quản lý state (typing indicators, online status)
+
+**Message flow:**
+```
+Alice                          Bob
+  |                             |
+  |-------- TCP Connect ------->|
+  |         (SYN-SYN-ACK-ACK)   |
+  |                             |
+  |-------- HELLO:alice ------->|
+  |<-------- HELLO:bob ---------|
+  |                             |
+  |-------- MESSAGE:alice:Hi -->|
+  |         (guaranteed delivery)|
+  |<-------- MESSAGE:bob:Hello -|
+  |                             |
+  |-------- MESSAGE:alice:... -->|
+  |         (reuse connection)   |
+  |<-------- MESSAGE:bob:... ----|
+  |                             |
+  |-------- [Connection stays]   |
+  |         [open for more msgs] |
+```
+
+**Xử lý lỗi:**
+- Nếu connection bị đóng → tự động reconnect khi gửi message tiếp theo
+- Heartbeat checker phát hiện connection dead → remove khỏi danh sách
+
+#### 4.2.3. TCP cho File Transfer (Port 8890-9889)
+
+**Tại sao TCP cho file transfer:**
+- **Đảm bảo tính toàn vẹn**: File phải được nhận đầy đủ, không mất byte nào
+- **Thứ tự dữ liệu**: Các chunk file phải được nhận đúng thứ tự
+- **Kiểm soát luồng**: Tránh receiver bị quá tải khi nhận file lớn
+
+**Cơ chế transfer:**
+1. **Metadata qua Chat TCP**: Gửi thông tin file (tên, size) qua chat connection
+2. **File data qua File TCP**: Tạo connection riêng để transfer file
+3. **Streaming**: Đọc file theo chunk (8KB buffer) và gửi qua TCP
+4. **Verification**: Receiver đọc đúng số bytes như metadata
+
+**Flow:**
+```
+Sender                         Receiver
+  |                               |
+  |-- FILE:name|size|ip|id ------>| (via Chat TCP)
+  |                               |
+  |<-- REQUEST_FILE:id -----------| (via File TCP)
+  |                               |
+  |-- [File data chunks] -------->|
+  |   (8KB per chunk)             |
+  |   (TCP ensures order)         |
+  |                               |
+  |-- [More chunks] ------------->|
+  |                               |
+  |-- [EOF] --------------------->|
+  |                               |
+```
+
+**Lợi ích TCP:**
+- Tự động retransmit nếu packet bị mất
+- Đảm bảo file được nhận đầy đủ
+- Flow control tránh buffer overflow
+
+#### 4.2.4. TCP cho Voice Call (Port 9000-9999)
+
+**Đặc điểm:**
+- **Bidirectional streaming**: Cả 2 bên gửi/nhận audio đồng thời
+- **Real-time requirement**: Cần latency thấp (< 200ms)
+- **Continuous connection**: Connection mở suốt cuộc gọi
+
+**Audio streaming qua TCP:**
+- Capture audio từ microphone (1024 bytes buffer)
+- Gửi qua TCP socket (đảm bảo delivery)
+- Nhận audio từ peer và play qua speaker
+
+**Trade-off TCP vs UDP cho Voice:**
+- **TCP (đang dùng)**: Đảm bảo delivery nhưng có thể delay nếu retransmit
+- **UDP (không dùng)**: Latency thấp hơn nhưng có thể mất packet (audio bị gián đoạn)
+
+**Quyết định dùng TCP (không dùng UDP):**
+- Trong môi trường LAN, TCP retransmit nhanh (< 50ms)
+- Đảm bảo chất lượng audio tốt hơn (không mất packet)
+- Dễ implement và debug (không cần xử lý packet loss)
+- Code đơn giản hơn (chỉ cần Socket, không cần DatagramSocket)
+
+#### 4.2.5. TCP cho Video Call (Port 9500-10499, 9600-10599)
+
+**Kiến trúc dual-socket:**
+- **Video socket**: Gửi/nhận video frames (JPEG compressed)
+- **Audio socket**: Gửi/nhận audio riêng biệt
+
+**Video streaming qua TCP:**
+- Capture frame từ webcam (640x480, 15 FPS)
+- Compress thành JPEG (~10-50KB per frame)
+- Gửi qua TCP: `[4 bytes size][JPEG data]`
+- Receiver nhận và hiển thị
+
+**Tại sao TCP cho Video:**
+- **Frame integrity**: Mỗi frame phải được nhận đầy đủ
+- **Order guarantee**: Frames phải hiển thị đúng thứ tự
+- **Error recovery**: Tự động retransmit nếu frame bị corrupt
+
+**Audio trong Video Call:**
+- Tương tự voice call nhưng chạy song song với video
+- Sync timing giữa audio và video
+- TCP đảm bảo audio không bị mất (quan trọng cho lip-sync)
+
+### 4.3. TCP Connection Management
+
+#### 4.3.1. Connection Lifecycle
+
+**1. Connection Establishment (Three-way Handshake)**
+```
+Client                          Server
+  |                               |
+  |-------- SYN (seq=x) ---------->|
+  |                                |
+  |<------- SYN-ACK (seq=y, ack=x+1)|
+  |                                |
+  |-------- ACK (ack=y+1) -------->|
+  |                                |
+  |      [Connection Established]  |
+```
+
+**2. Data Transfer**
+- Sử dụng `BufferedReader` và `PrintWriter` với UTF-8 encoding
+- Mỗi message kết thúc bằng newline (`\n`)
+- TCP tự động đảm bảo delivery và order
+
+**3. Connection Termination**
+```
+Peer A                          Peer B
+  |                               |
+  |-------- FIN ------------------>|
+  |<------- ACK -------------------|
+  |                                |
+  |<------- FIN -------------------|
+  |-------- ACK ------------------>|
+  |                                |
+  |      [Connection Closed]       |
+```
+
+#### 4.3.2. Connection Pooling và Reuse
+
+**Chiến lược:**
+- Mỗi peer pair duy trì 1 TCP connection cho chat
+- Connection được reuse cho nhiều messages
+- Tự động reconnect nếu connection bị đóng
+
+**Lợi ích:**
+- Giảm overhead của TCP handshake
+- Giảm latency
+- Tiết kiệm tài nguyên hệ thống
+
+#### 4.3.3. Error Handling và Recovery
+
+**Các tình huống lỗi:**
+1. **Connection timeout**: Socket timeout (5-30s tùy service)
+2. **Connection refused**: Peer offline hoặc firewall block
+3. **Connection reset**: Peer đóng connection đột ngột
+4. **Network unreachable**: Mất kết nối mạng
+
+**Cơ chế recovery:**
+- Retry connection khi gửi message tiếp theo
+- Heartbeat checker phát hiện dead connection
+- Remove peer khỏi danh sách nếu không thể reconnect
+
+### 4.4. So sánh TCP và UDP cho từng dịch vụ
+
+| Dịch vụ | Giao thức | Lý do | Trade-off |
+|---------|-----------|-------|-----------|
+| **Discovery** | TCP | Đảm bảo thông tin được nhận | Overhead handshake nhưng chỉ 1 lần |
+| **Chat Messages** | TCP | Đảm bảo message được gửi đến | Latency cao hơn UDP nhưng đáng tin cậy |
+| **File Transfer** | TCP | File phải đầy đủ, đúng thứ tự | Chậm hơn UDP nhưng đảm bảo integrity |
+| **Voice Call** | TCP | Đảm bảo audio không bị mất | Có thể delay nếu retransmit nhưng chất lượng tốt |
+| **Video Call** | TCP | Frame phải đầy đủ, đúng thứ tự | Có thể jitter nhưng không bị corrupt |
+
+### 4.5. Tối ưu hóa TCP Performance
+
+#### 4.5.1. Socket Options
+
+**Các tùy chọn được sử dụng:**
+- `SO_TIMEOUT`: Đặt timeout để tránh blocking vô hạn
+- `SO_REUSEADDR`: Cho phép reuse address (cho session lock)
+- `TCP_NODELAY`: Có thể bật để giảm latency (chưa implement)
+
+#### 4.5.2. Buffer Sizes
+
+**Tối ưu buffer:**
+- Chat: Default buffer (đủ cho text messages)
+- File: 8KB buffer (cân bằng giữa memory và performance)
+- Audio: 1024 bytes (phù hợp với audio format)
+- Video: Dynamic (theo size của JPEG frame)
+
+#### 4.5.3. Connection Pooling
+
+**Quản lý connections:**
+- Sử dụng `ConcurrentHashMap` để lưu active connections
+- Reuse connection thay vì tạo mới mỗi lần
+- Cleanup connections khi peer offline
+
+### 4.6. Hạn chế của TCP và giải pháp
+
+#### 4.6.1. Head-of-line Blocking
+
+**Vấn đề:**
+- Nếu một packet bị mất, các packet sau phải đợi retransmit
+- Ảnh hưởng đến real-time streaming (voice/video)
+
+**Giải pháp hiện tại:**
+- Sử dụng separate sockets cho video và audio
+- Buffer nhỏ để giảm delay
+- Trong LAN, packet loss rất thấp nên ít ảnh hưởng
+
+#### 4.6.2. TCP Overhead
+
+**Vấn đề:**
+- TCP header 20 bytes (so với UDP 8 bytes)
+- ACK packets tăng traffic
+
+**Giải pháp:**
+- Reuse connections để giảm handshake overhead
+- Batch messages khi có thể (chưa implement)
+
+#### 4.6.3. Latency trong Real-time
+
+**Vấn đề:**
+- TCP retransmit có thể gây delay
+- Không phù hợp cho real-time cực kỳ nhạy cảm
+
+**Giải pháp tương lai:**
+- Có thể hybrid: TCP cho control, UDP cho streaming
+- Sử dụng WebRTC (UDP-based) cho voice/video
+
+### 4.7. Kết luận về TCP/UDP
+
+**Quyết định thiết kế:**
+- Ứng dụng sử dụng **100% TCP** cho tất cả dịch vụ
+- **KHÔNG sử dụng UDP** trong code hiện tại
+- Tất cả kết nối đều sử dụng `Socket` và `ServerSocket` (TCP)
+- Không có `DatagramSocket` hay `DatagramPacket` (UDP) nào được sử dụng
+
+**Lý do chọn TCP hoàn toàn:**
+- Độ tin cậy quan trọng hơn latency trong môi trường LAN
+- Trong LAN, TCP overhead và latency chấp nhận được (< 50ms)
+- Đơn giản trong implementation (chỉ cần học 1 giao thức)
+- Dễ debug và maintain (TCP có error handling tốt)
+
+**Ưu điểm của việc chỉ dùng TCP:**
+- ✅ Đơn giản trong implementation
+- ✅ Đảm bảo data integrity (không mất packet)
+- ✅ Dễ debug và maintain
+- ✅ Không cần xử lý packet loss, reordering
+- ✅ Tự động retransmit khi có lỗi
+
+**Nhược điểm (so với hybrid TCP/UDP):**
+- ❌ Latency cao hơn UDP cho real-time streaming
+- ❌ Overhead lớn hơn (TCP header + ACK)
+- ❌ Head-of-line blocking (ảnh hưởng video/audio)
+- ❌ Không tối ưu cho voice/video streaming
+
+**Tại sao không dùng UDP:**
+- Trong môi trường LAN, packet loss rất thấp (< 0.1%)
+- TCP retransmit nhanh (< 50ms trong LAN)
+- Chất lượng audio/video vẫn tốt với TCP
+- Không cần độ phức tạp của UDP + error handling
+
+**Hướng phát triển tương lai:**
+- Có thể hybrid TCP/UDP trong tương lai
+- **UDP cho real-time streaming**: Voice/video call với RTP/RTCP
+- **TCP cho control messages**: Discovery, chat, file transfer
+- Sử dụng WebRTC framework (UDP-based) cho voice/video
+- Implement FEC (Forward Error Correction) cho UDP streaming
+
+---
+
+## 4.8. Message Protocol
 ```
 MESSAGE_TYPE:PARAM1:PARAM2:...
 
@@ -230,7 +644,7 @@ Ví dụ:
 - CALL_REJECTED:charlie
 ```
 
-### 4.2. Connection Flow
+### 4.9. Connection Flow
 **Peer Connection:**
 ```
 Client                          Server
@@ -274,18 +688,31 @@ project/
 [2025-11-02 14:30:25] alice: Hello
 [2025-11-02 14:30:30] bob: Hi there
 [2025-11-02 14:31:00] alice: [FILE:report.pdf]
+[2025-11-02 14:32:00] System: ✅ charlie đã tham gia nhóm
 ```
+
+**Lưu ý**: 
+- Format: `[YYYY-MM-DD HH:mm:ss] sender: message`
+- Group chat: `[timestamp] sender: message` (sender là username)
+- System messages: Thông báo thành viên tham gia/rời nhóm
 
 ---
 
 ## 6. XỬ LÝ ĐỒNG BỘ VÀ CONCURRENCY
 
 ### 6.1. Thread Management
-- **Discovery threads**: Scan network (254 threads song song)
-- **Server threads**: Accept connections
-- **Connection threads**: Mỗi peer connection 1 thread
-- **Call threads**: Audio send/receive, Video send/receive/display
-- **Daemon threads**: Tự động cleanup khi app đóng
+- **Discovery threads**: 
+    - Ping scan: 254 threads song song (ExecutorService 50 threads)
+    - Discovery scan: 50 ports × số active hosts
+    - Timeout: Ping 8s, Discovery scan 60s
+- **Server threads**: Accept connections (Discovery, Chat, File, Voice, Video)
+- **Connection threads**: Mỗi peer connection 1 thread (đọc message liên tục)
+- **Call threads**: 
+    - Voice: Audio send/receive (2 threads)
+    - Video: Video send/receive/display (3 threads) + Audio send/receive (2 threads)
+- **Session lock**: 1 thread cho local lock server
+- **Heartbeat checker**: 1 thread kiểm tra peer offline (10s interval)
+- **Daemon threads**: Video/audio threads set daemon = true
 
 ### 6.2. Concurrent Data Structures
 ```java
@@ -296,8 +723,11 @@ ConcurrentHashMap<String, ChatGroup> chatGroups
 
 ### 6.3. Synchronization
 - Platform.runLater() cho UI updates từ background threads
-- AtomicBoolean cho call state management
-- Socket timeouts để tránh blocking vô hạn
+- AtomicBoolean cho call state management (isCallActive, isVideoCallActive)
+- Socket timeouts để tránh blocking vô hạn (5s-30s tùy service)
+- ConcurrentHashMap cho thread-safe collections
+- ExecutorService cho quản lý thread pool
+- CountDownLatch cho đồng bộ ping scan
 
 ---
 
@@ -345,8 +775,11 @@ ConcurrentHashMap<String, ChatGroup> chatGroups
 
 ### 8.3. Call Errors
 - Webcam không khả dụng: Reject call và thông báo
-- Audio device busy: Log error và continue với video only
-- Connection lost: Auto cleanup threads và resources
+- Audio device busy: Retry mechanism (3 lần cho voice, auto-format detection cho video)
+- Connection lost: Auto cleanup threads và resources (gửi END signal trước)
+- Video call conflict: Tự động reject voice call nếu video call đang active
+- Socket timeout: 30s cho video call, 5s cho file transfer
+- Cleanup hoàn toàn: Đóng microphone, speaker, webcam, sockets, set null references
 
 ### 8.4. Group Sync
 - Duplicate group: Update members list
@@ -360,24 +793,34 @@ ConcurrentHashMap<String, ChatGroup> chatGroups
 ### 9.1. Ưu điểm
 ✅ **Không cần server**: Hoàn toàn P2P, giảm chi phí infrastructure
 ✅ **Real-time**: Event-driven architecture, latency thấp
-✅ **Tự động discovery**: Không cần config IP thủ công
-✅ **Đa tính năng**: Text, file, voice, video, group chat
-✅ **Modern UI**: JavaFX với design hiện đại
-✅ **Thread-safe**: Sử dụng concurrent collections
+✅ **Tự động discovery**: Scan thông minh (ping + TCP) để tìm active hosts nhanh
+✅ **Đa tính năng**: Text, file, voice, video, group chat, typing indicators
+✅ **Modern UI**: JavaFX với design hiện đại, image preview, online indicators
+✅ **Thread-safe**: Sử dụng concurrent collections, AtomicBoolean
+✅ **Session management**: Ngăn đăng nhập trùng lặp trên LAN
+✅ **Noise gate**: Lọc tiếng ồn trong voice call
+✅ **Smart cleanup**: Đảm bảo resources được giải phóng hoàn toàn
 
 ### 9.2. Hạn chế
-❌ **LAN only**: Chỉ hoạt động trong cùng subnet
+❌ **LAN only**: Chỉ hoạt động trong cùng subnet (không hỗ trợ Internet)
 ❌ **No encryption**: Data truyền plain text (chưa mã hóa)
-❌ **No authentication**: Password lưu plain text
+❌ **No authentication**: Password lưu plain text trong users.txt
 ❌ **File size limit**: Max 50MB
-❌ **Video quality**: Cố định 15 FPS, không adaptive
+❌ **Video quality**: Cố định 15 FPS, 640x480, không adaptive bitrate
 ❌ **No NAT traversal**: Không hoạt động qua router/firewall phức tạp
-❌ **Single device per user**: Không sync giữa nhiều thiết bị
+❌ **Single device per user**: Mỗi username chỉ đăng nhập trên 1 máy (session lock)
+❌ **Discovery scan time**: Có thể mất 8-60 giây để scan toàn bộ LAN
+❌ **Echo trong call**: Vẫn có thể echo nếu không dùng headphone
 
 ### 9.3. Vấn đề đã sửa
-✅ **Group sync issue**: Đã thêm xử lý `GROUP_SYNC` message
-✅ **Video call connection**: Đã đồng bộ video/audio sockets
-✅ **Thread cleanup**: Proper shutdown của resources
+✅ **Group sync issue**: Đã thêm xử lý `GROUP_SYNC` message với thông báo thành viên mới/rời
+✅ **Video call connection**: Đã đồng bộ video/audio sockets (caller kết nối audio sau khi accept)
+✅ **Thread cleanup**: Proper shutdown của resources (microphone, speaker, webcam, sockets)
+✅ **Audio device conflict**: Retry mechanism và auto-format detection
+✅ **Discovery performance**: Tối ưu từ 1000 ports xuống 50 ports, ping scan trước
+✅ **Session lock**: Ngăn đăng nhập trùng lặp trên LAN
+✅ **Typing indicators**: Implement cho cả 1-1 và group chat
+✅ **Image preview**: Hiển thị preview ảnh trong chat
 
 ---
 
@@ -450,17 +893,104 @@ Dự án đã chứng minh khả năng triển khai P2P communication mà không
 - OS: Windows, macOS, Linux
 
 ### C. Port Usage Summary
-| Service | Port Range | Protocol |
-|---------|-----------|----------|
-| Discovery | 8889 | TCP |
-| Chat Server | 8888-9887 | TCP |
-| File Server | 8890-9889 | TCP |
-| Voice Call | 9000-9999 | TCP |
-| Video Stream | 9500-10499 | TCP |
-| Video Audio | 9600-10599 | TCP |
+| Service | Port Range | Protocol | Description |
+|---------|-----------|----------|-------------|
+| Discovery | 11000-11049 | TCP | Peer discovery (50 ports, dynamic) |
+| Chat Server | 8888-9887 | TCP | Chat messages |
+| File Server | 8890-9889 | TCP | File transfer |
+| Voice Call | 9000-9999 | TCP | Voice streaming |
+| Video Stream | 9500-10499 | TCP | Video data |
+| Video Audio | 9600-10599 | TCP | Audio cho video call |
+| Session Lock | 20000-39999 | TCP | Ngăn đăng nhập trùng (local) |
+
+**Port Calculation**:
+- Discovery: `11000 + abs(username.hashCode() % 50)`
+- Chat: `8888 + abs(username.hashCode() % 1000)`
+- File: `8890 + abs(username.hashCode() % 1000)`
+- Voice: `9000 + abs(username.hashCode() % 1000)`
+- Video: `9500 + abs(username.hashCode() % 1000)`
+- Video Audio: `9600 + abs(username.hashCode() % 1000)`
+- Session Lock: `20000 + abs(username.hashCode() % 20000)`
 
 ---
 
 **Tác giả**: Đỗ Quốc Phong
 **Ngày**: 02/11/2025
 **Version**: 1.0
+
+---
+
+## 12. CHI TIẾT KỸ THUẬT BỔ SUNG
+
+### 12.1. Session Lock Manager
+**Mục đích**: Ngăn chặn đăng nhập trùng lặp trên LAN
+
+**Cơ chế**:
+1. Local lock: Bind ServerSocket trên localhost với port = 20000 + hash(username) % 20000
+2. LAN check: Scan discovery port (11000-11049) của username trên toàn bộ subnet
+3. Nếu tìm thấy discovery port đang mở → user đã đăng nhập trên máy khác → từ chối
+4. Release lock khi đăng xuất hoặc thoát app
+
+**Ưu điểm**: 
+- Không cần database hoặc server trung tâm
+- Tận dụng discovery port đã có sẵn
+- Scan nhanh (chỉ 50 ports, timeout 3s)
+
+### 12.2. Typing Indicators
+**Protocol**:
+- 1-1 chat: `TYPING`, `STOP_TYPING`
+- Group chat: `GROUP_TYPING:groupName:username`, `GROUP_STOP_TYPING:groupName:username`
+
+**Logic**:
+- Gửi TYPING khi bắt đầu gõ (sau 3s không gõ tự động gửi STOP_TYPING)
+- Hiển thị indicator trong 5 giây, sau đó auto-hide
+- Hỗ trợ nhiều người đang gõ trong group
+
+### 12.3. Image Preview
+**Tính năng**:
+- Tự động phát hiện file ảnh (jpg, jpeg, png, gif, bmp, webp)
+- Hiển thị preview trong chat (max 350x350, preserve ratio)
+- Double-click để xem full size (mở bằng default image viewer)
+- Vẫn có nút download để lưu file
+
+### 12.4. Discovery Optimization
+**Cải tiến**:
+- Trước: Scan 1000 ports trên 254 IPs = 254,000 kết nối (rất chậm)
+- Sau: 
+  1. Ping scan để tìm active hosts (8s)
+  2. Scan 50 discovery ports trên active hosts (60s)
+  3. Ưu tiên scan localhost trước
+  4. ExecutorService với 50 threads đồng thời
+
+**Kết quả**: Giảm thời gian scan từ vài phút xuống còn 8-60 giây
+
+### 12.5. Audio Format Detection
+**Vấn đề**: Windows và Linux/Mac sử dụng endianness khác nhau
+
+**Giải pháp**: Auto-detect format được hỗ trợ
+1. Thử little-endian (Windows thường dùng)
+2. Fallback sang big-endian (Linux/Mac)
+3. Fallback cuối cùng: unsigned little-endian
+
+**Áp dụng**: Video call audio (voice call dùng fixed little-endian)
+
+### 12.6. Noise Gate trong Voice Call
+**Mục đích**: Giảm bandwidth và tiếng ồn
+
+**Cơ chế**:
+- Tính RMS (Root Mean Square) của audio buffer
+- Chỉ gửi nếu RMS > 500 (có tiếng nói)
+- Nếu không, gửi silence packet (để tránh jitter)
+
+**Kết quả**: Giảm traffic và cải thiện chất lượng
+
+### 12.7. Heartbeat Checker
+**Mục đích**: Phát hiện peer offline
+
+**Cơ chế**:
+- Chạy mỗi 10 giây
+- Kiểm tra các peer không có connection active
+- Thử kết nối đến discovery port để verify
+- Nếu không kết nối được → remove khỏi danh sách
+
+**Lưu ý**: Chỉ xóa nếu không có connection active và không thể reconnect

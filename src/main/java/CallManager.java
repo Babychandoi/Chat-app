@@ -42,7 +42,22 @@ public class CallManager {
         voiceCallManager.setCallListener(new VoiceCallManager.CallListener() {
             @Override
             public void onIncomingVoiceCall(String caller) {
-                showIncomingCallDialog(caller, false);
+                // KIỂM TRA: Nếu video call đang active, từ chối voice call
+                if (videoCallManager.isVideoCallActive()) {
+                    System.out.println("⚠️ [CALL] Rejecting voice call - video call is active");
+                    voiceCallManager.rejectCall();
+                    return;
+                }
+                
+                // Đợi một chút để đảm bảo video call đã cleanup xong
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(800); // Đợi 800ms
+                        Platform.runLater(() -> showIncomingCallDialog(caller, false));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }).start();
             }
 
             @Override
@@ -124,11 +139,18 @@ public class CallManager {
             @Override
             public void onCallEnded() {
                 Platform.runLater(() -> {
+                    System.out.println("📞 Video call ended callback received - FORCE CLEANUP");
                     if (videoCallStage != null) {
                         videoCallStage.close();
                     }
+                    // FORCE CLEANUP - QUAN TRỌNG
                     localVideoView = null;
                     remoteVideoView = null;
+                    
+                    // Đảm bảo audio devices được đóng hoàn toàn
+                    if (videoCallManager != null) {
+                        videoCallManager.endVideoCall();
+                    }
                 });
             }
         });
@@ -429,6 +451,9 @@ public class CallManager {
             voiceCallStage = new Stage();
             voiceCallStage.initModality(Modality.APPLICATION_MODAL);
             voiceCallStage.setTitle("Voice Call - " + peer);
+            voiceCallStage.setOnCloseRequest(e -> {
+                voiceCallManager.endCall();
+            });
 
             VBox callBox = new VBox(20);
             callBox.setPadding(new Insets(30));

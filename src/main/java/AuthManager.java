@@ -57,7 +57,7 @@ public class AuthManager {
         messageLabel.setStyle("-fx-text-fill: #FF3B30; -fx-font-size: 12;");
         messageLabel.setWrapText(true);
 
-        loginButton.setOnAction(e -> {
+		loginButton.setOnAction(e -> {
             String username = usernameField.getText().trim();
             String password = passwordField.getText();
 
@@ -67,7 +67,13 @@ public class AuthManager {
             }
 
             if (authenticate(username, password)) {
-                mainController.loginSuccess(username);
+				// Thử chiếm khóa phiên LAN theo cổng cố định của username
+				boolean lockOk = SessionLockManager.getInstance().acquire(username);
+				if (!lockOk) {
+					messageLabel.setText("Tài khoản này đang đăng nhập trên máy khác trong LAN!");
+					return;
+				}
+				mainController.loginSuccess(username);
             } else {
                 messageLabel.setText("Sai tên đăng nhập hoặc mật khẩu!");
             }

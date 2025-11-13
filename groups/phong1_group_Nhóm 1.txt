@@ -1,3 +1,0 @@
-Nhóm 1
-phong2
-phong1,phong2

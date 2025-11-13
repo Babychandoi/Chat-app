@@ -1,14 +1,16 @@
 import javafx.application.Platform;
+import javafx.animation.PauseTransition;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
+import javafx.util.Duration;
 import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -28,6 +30,12 @@ public class ChatManager {
     private boolean isGroupChat = false;
     private Button voiceCallBtn;
     private Button videoCallBtn;
+    private Button addMemberBtn;
+    private Button leaveGroupBtn;
+    private Label typingIndicatorLabel;
+    private javafx.animation.Timeline typingTimeout;
+    private java.util.Set<String> typingUsers = new java.util.HashSet<>();
+    private java.util.Map<String, javafx.animation.Timeline> typingTimeouts = new java.util.HashMap<>();
 
     public ChatManager(MainController mainController) {
         this.mainController = mainController;
@@ -96,9 +104,17 @@ public class ChatManager {
         VBox userInfo = new VBox(2);
         Label usernameLabel = new Label(mainController.getCurrentUser());
         usernameLabel.setStyle("-fx-text-fill: white; -fx-font-size: 16; -fx-font-weight: bold;");
-        Label statusLabel = new Label("🟢 Đang hoạt động");
-        statusLabel.setStyle("-fx-text-fill: rgba(255,255,255,0.8); -fx-font-size: 12;");
-        userInfo.getChildren().addAll(usernameLabel, statusLabel);
+        
+        // Status với online indicator
+        HBox statusBox = new HBox(5);
+        statusBox.setAlignment(Pos.CENTER_LEFT);
+        Label onlineIndicator = new Label("●");
+        onlineIndicator.setStyle("-fx-text-fill: #4CD964; -fx-font-size: 12;");
+        Label statusText = new Label("Đang hoạt động");
+        statusText.setStyle("-fx-text-fill: rgba(255,255,255,0.8); -fx-font-size: 12;");
+        statusBox.getChildren().addAll(onlineIndicator, statusText);
+        
+        userInfo.getChildren().addAll(usernameLabel, statusBox);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -143,9 +159,15 @@ public class ChatManager {
         chatScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         VBox.setVgrow(chatScrollPane, Priority.ALWAYS);
 
+        // Typing indicator
+        typingIndicatorLabel = new Label();
+        typingIndicatorLabel.setStyle("-fx-font-size: 12; -fx-text-fill: #8E8E93; -fx-font-style: italic;");
+        typingIndicatorLabel.setPadding(new Insets(5, 15, 5, 15));
+        typingIndicatorLabel.setVisible(false);
+
         HBox messageInputBox = createMessageInputBox();
 
-        centerPanel.getChildren().addAll(chatHeader, chatScrollPane, messageInputBox);
+        centerPanel.getChildren().addAll(chatHeader, chatScrollPane, typingIndicatorLabel, messageInputBox);
         return centerPanel;
     }
 
@@ -178,7 +200,25 @@ public class ChatManager {
         videoCallBtn.setOnAction(e -> mainController.getCallManager().startVideoCall(currentChatTarget));
         videoCallBtn.setVisible(false);
 
-        chatHeader.getChildren().addAll(chatTitleLabel, headerSpacer, voiceCallBtn, videoCallBtn);
+        // Nút thêm thành viên (chỉ hiện khi chat nhóm)
+        addMemberBtn = new Button("➕");
+        addMemberBtn.setStyle("-fx-background-color: #34C759; -fx-text-fill: white; " +
+                "-fx-font-size: 16; -fx-font-weight: bold; " +
+                "-fx-min-width: 40; -fx-min-height: 40; " +
+                "-fx-background-radius: 50%; -fx-cursor: hand;");
+        addMemberBtn.setOnAction(e -> showAddMemberDialog());
+        addMemberBtn.setVisible(false);
+
+        // Nút rời nhóm (chỉ hiện khi chat nhóm)
+        leaveGroupBtn = new Button("🚪");
+        leaveGroupBtn.setStyle("-fx-background-color: #FF3B30; -fx-text-fill: white; " +
+                "-fx-font-size: 16; -fx-font-weight: bold; " +
+                "-fx-min-width: 40; -fx-min-height: 40; " +
+                "-fx-background-radius: 50%; -fx-cursor: hand;");
+        leaveGroupBtn.setOnAction(e -> leaveGroup());
+        leaveGroupBtn.setVisible(false);
+
+        chatHeader.getChildren().addAll(chatTitleLabel, headerSpacer, addMemberBtn, leaveGroupBtn, voiceCallBtn, videoCallBtn);
         return chatHeader;
     }
 
@@ -201,6 +241,15 @@ public class ChatManager {
         messageField.setStyle("-fx-background-color: #F2F2F7; -fx-background-radius: 20; " +
                 "-fx-padding: 12 20; -fx-font-size: 14;");
         HBox.setHgrow(messageField, Priority.ALWAYS);
+
+        // Typing detection
+        messageField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (currentChatTarget != null && !newValue.trim().isEmpty()) {
+                handleTyping();
+            } else if (newValue.trim().isEmpty()) {
+                stopTyping();
+            }
+        });
 
         Button sendButton = new Button("➤");
         sendButton.setStyle("-fx-background-color: #0068FF; -fx-text-fill: white; " +
@@ -291,11 +340,21 @@ public class ChatManager {
         Label nameLabel = new Label(name);
         nameLabel.setStyle("-fx-font-size: 15; -fx-font-weight: bold; -fx-text-fill: #000;");
 
-        Label statusLabel = new Label(isGroup ?
-                mainController.getNetworkManager().getChatGroups().get(name).members.size() + " thành viên" : "🟢 Online");
-        statusLabel.setStyle("-fx-font-size: 13; -fx-text-fill: #8E8E93;");
-
-        info.getChildren().addAll(nameLabel, statusLabel);
+        // Status với online indicator cho user hoặc số thành viên cho group
+        if (isGroup) {
+            Label statusLabel = new Label(mainController.getNetworkManager().getChatGroups().get(name).members.size() + " thành viên");
+            statusLabel.setStyle("-fx-font-size: 13; -fx-text-fill: #8E8E93;");
+            info.getChildren().addAll(nameLabel, statusLabel);
+        } else {
+            HBox statusBox = new HBox(5);
+            statusBox.setAlignment(Pos.CENTER_LEFT);
+            Label onlineIndicator = new Label("●");
+            onlineIndicator.setStyle("-fx-text-fill: #4CD964; -fx-font-size: 10;");
+            Label statusText = new Label("Online");
+            statusText.setStyle("-fx-font-size: 13; -fx-text-fill: #8E8E93;");
+            statusBox.getChildren().addAll(onlineIndicator, statusText);
+            info.getChildren().addAll(nameLabel, statusBox);
+        }
         HBox.setHgrow(info, Priority.ALWAYS);
 
         item.getChildren().addAll(avatar, info);
@@ -324,6 +383,11 @@ public class ChatManager {
 
         voiceCallBtn.setVisible(true);
         videoCallBtn.setVisible(true);
+        addMemberBtn.setVisible(false);
+        leaveGroupBtn.setVisible(false);
+
+        // Clear typing indicators khi chuyển chat
+        clearTypingIndicators();
 
         loadChatHistory(username);
         mainController.getNetworkManager().ensureConnection(username);
@@ -336,6 +400,11 @@ public class ChatManager {
 
         voiceCallBtn.setVisible(false);
         videoCallBtn.setVisible(false);
+        addMemberBtn.setVisible(true);
+        leaveGroupBtn.setVisible(true);
+
+        // Clear typing indicators khi chuyển chat
+        clearTypingIndicators();
 
         ChatGroup group = mainController.getNetworkManager().getChatGroups().get(groupName);
         if (group != null) {
@@ -348,6 +417,9 @@ public class ChatManager {
     private void sendMessage() {
         String message = messageField.getText().trim();
         if (message.isEmpty() || currentChatTarget == null) return;
+
+        // Gửi stop typing signal
+        stopTyping();
 
         messageField.clear();
 
@@ -398,7 +470,16 @@ public class ChatManager {
 
             chatMessageContainer.getChildren().add(messageContainer);
 
-            chatScrollPane.setVvalue(1.0);
+            // Auto-scroll xuống tin nhắn mới nhất với delay nhỏ để UI render xong
+            Platform.runLater(() -> {
+                PauseTransition pause = new PauseTransition(Duration.millis(50));
+                pause.setOnFinished(e -> {
+                    chatScrollPane.setVvalue(1.0);
+                    // Đảm bảo scroll đến cuối cùng
+                    chatScrollPane.layout();
+                });
+                pause.play();
+            });
         });
     }
 
@@ -411,7 +492,7 @@ public class ChatManager {
             messageContainer.setAlignment(isSent ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
 
             VBox messageBubble = new VBox(5);
-            messageBubble.setMaxWidth(350);
+            messageBubble.setMaxWidth(isImageFile(fileName) ? 400 : 350); // Rộng hơn cho ảnh
             messageBubble.setPadding(new Insets(12, 15, 12, 15));
             messageBubble.setStyle("-fx-background-color: " +
                     (isSent ? "#007AFF" : "#E5E5EA") + ";" +
@@ -425,61 +506,89 @@ public class ChatManager {
                 messageBubble.getChildren().add(senderLabel);
             }
 
-            HBox fileInfo = new HBox(10);
-            fileInfo.setAlignment(Pos.CENTER_LEFT);
-
-            Label fileIcon = new Label(getFileIcon(fileName));
-            fileIcon.setStyle("-fx-font-size: 32;");
-
-            VBox fileDetails = new VBox(3);
-            Label fileNameLabel = new Label(fileName);
-            fileNameLabel.setWrapText(true);
-            fileNameLabel.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " +
-                    (isSent ? "white" : "black") + ";");
-
-            Label fileSizeLabel = new Label(formatFileSize(fileSize));
-            fileSizeLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " +
-                    (isSent ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)") + ";");
-
-            fileDetails.getChildren().addAll(fileNameLabel, fileSizeLabel);
-            fileInfo.getChildren().addAll(fileIcon, fileDetails);
-
-            Button downloadBtn = new Button("⬇ Tải về");
-            downloadBtn.setStyle("-fx-background-color: " + (isSent ? "rgba(255,255,255,0.2)" : "#0068FF") + ";" +
-                    "-fx-text-fill: white;" +
-                    "-fx-font-size: 12; -fx-font-weight: bold; -fx-padding: 6 12;" +
-                    "-fx-background-radius: 8; -fx-cursor: hand;");
-
-            downloadBtn.setOnAction(e -> {
-                File file = new File("shared_files/" + uniqueFileName);
-                if (file.exists()) {
-                    FileChooser fileChooser = new FileChooser();
-                    fileChooser.setTitle("Lưu file");
-                    fileChooser.setInitialFileName(fileName);
-                    File saveFile = fileChooser.showSaveDialog(mainController.getPrimaryStage());
-
-                    if (saveFile != null) {
-                        try {
-                            Files.copy(file.toPath(), saveFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                            showAlert("Thành công", "Đã lưu file: " + fileName);
-                        } catch (IOException ex) {
-                            showAlert("Lỗi", "Không thể lưu file!");
+            // KIỂM TRA: Nếu là ảnh, hiển thị preview
+            File file = new File("shared_files/" + uniqueFileName);
+            if (isImageFile(fileName) && file.exists()) {
+                try {
+                    // Hiển thị ảnh preview
+                    Image image = new Image(file.toURI().toString());
+                    ImageView imageView = new ImageView(image);
+                    
+                    // Giới hạn kích thước ảnh
+                    imageView.setPreserveRatio(true);
+                    imageView.setFitWidth(350);
+                    imageView.setFitHeight(350);
+                    
+                    // Bo góc cho ảnh
+                    imageView.setStyle("-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 5, 0, 0, 1);");
+                    
+                    // Click để xem full size
+                    imageView.setOnMouseClicked(e -> {
+                        if (e.getClickCount() == 2) { // Double click
+                            openImageInViewer(file);
                         }
-                    }
-                } else {
-                    showAlert("Thông báo", "File đã được lưu trong thư mục shared_files/");
+                    });
+                    imageView.setStyle("-fx-cursor: hand;");
+                    
+                    messageBubble.getChildren().add(imageView);
+                    
+                    // Thêm tên file, size và nút download
+                    HBox fileInfoSmall = new HBox(8);
+                    fileInfoSmall.setAlignment(Pos.CENTER_LEFT);
+                    
+                    VBox fileTextInfo = new VBox(2);
+                    Label fileNameLabel = new Label(fileName);
+                    fileNameLabel.setWrapText(true);
+                    fileNameLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " +
+                            (isSent ? "rgba(255,255,255,0.8)" : "#666") + ";");
+                    
+                    Label fileSizeLabel = new Label(formatFileSize(fileSize));
+                    fileSizeLabel.setStyle("-fx-font-size: 10; -fx-text-fill: " +
+                            (isSent ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.5)") + ";");
+                    
+                    fileTextInfo.getChildren().addAll(fileNameLabel, fileSizeLabel);
+                    
+                    Region spacer = new Region();
+                    HBox.setHgrow(spacer, Priority.ALWAYS);
+                    
+                    // Nút download nhỏ cho ảnh
+                    Button downloadImgBtn = new Button("⬇");
+                    downloadImgBtn.setStyle("-fx-background-color: " + (isSent ? "rgba(255,255,255,0.2)" : "#0068FF") + ";" +
+                            "-fx-text-fill: white;" +
+                            "-fx-font-size: 14; -fx-font-weight: bold; -fx-padding: 4 8;" +
+                            "-fx-background-radius: 50%; -fx-cursor: hand; -fx-min-width: 28; -fx-min-height: 28;");
+                    downloadImgBtn.setOnAction(e -> downloadFile(file, fileName));
+                    
+                    fileInfoSmall.getChildren().addAll(fileTextInfo, spacer, downloadImgBtn);
+                    messageBubble.getChildren().add(fileInfoSmall);
+                    
+                } catch (Exception e) {
+                    System.err.println("❌ Error loading image: " + e.getMessage());
+                    // Fallback: hiển thị như file thông thường
+                    addFileInfoUI(messageBubble, fileName, fileSize, uniqueFileName, isSent, file);
                 }
-            });
+            } else {
+                // File thông thường (không phải ảnh hoặc ảnh không tồn tại)
+                addFileInfoUI(messageBubble, fileName, fileSize, uniqueFileName, isSent, file);
+            }
 
             Label timeLabel = new Label(timestamp);
             timeLabel.setStyle("-fx-font-size: 10; -fx-text-fill: " +
                     (isSent ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)") + ";");
+            messageBubble.getChildren().add(timeLabel);
 
-            messageBubble.getChildren().addAll(fileInfo, downloadBtn, timeLabel);
             messageContainer.getChildren().add(messageBubble);
-
             chatMessageContainer.getChildren().add(messageContainer);
-            chatScrollPane.setVvalue(1.0);
+            
+            // Auto-scroll xuống tin nhắn mới nhất
+            Platform.runLater(() -> {
+                PauseTransition pause = new PauseTransition(Duration.millis(50));
+                pause.setOnFinished(e -> {
+                    chatScrollPane.setVvalue(1.0);
+                    chatScrollPane.layout();
+                });
+                pause.play();
+            });
         });
     }
 
@@ -559,6 +668,112 @@ public class ChatManager {
         });
     }
 
+    private void showAddMemberDialog() {
+        if (currentChatTarget == null || !isGroupChat) {
+            showAlert("Lỗi", "Vui lòng chọn một nhóm!");
+            return;
+        }
+
+        ChatGroup group = mainController.getNetworkManager().getChatGroups().get(currentChatTarget);
+        if (group == null) {
+            showAlert("Lỗi", "Không tìm thấy nhóm!");
+            return;
+        }
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Thêm thành viên");
+        dialog.setHeaderText("Thêm thành viên vào nhóm: " + currentChatTarget);
+
+        VBox content = new VBox(15);
+        content.setPadding(new Insets(20));
+
+        Label membersLabel = new Label("Chọn thành viên để thêm:");
+        membersLabel.setStyle("-fx-font-weight: bold;");
+
+        VBox memberCheckboxes = new VBox(8);
+        List<CheckBox> checkBoxes = new ArrayList<>();
+
+        // Chỉ hiển thị các peer chưa có trong nhóm
+        for (String username : mainController.getNetworkManager().getDiscoveredPeers().keySet()) {
+            if (!username.equals(mainController.getCurrentUser()) && !group.isMember(username)) {
+                CheckBox cb = new CheckBox(username);
+                cb.setStyle("-fx-font-size: 13;");
+                checkBoxes.add(cb);
+                memberCheckboxes.getChildren().add(cb);
+            }
+        }
+
+        if (checkBoxes.isEmpty()) {
+            Label noMembersLabel = new Label("Không có thành viên nào để thêm");
+            noMembersLabel.setStyle("-fx-text-fill: #8E8E93; -fx-font-size: 13;");
+            memberCheckboxes.getChildren().add(noMembersLabel);
+        }
+
+        ScrollPane scrollPane = new ScrollPane(memberCheckboxes);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setPrefHeight(200);
+
+        content.getChildren().addAll(membersLabel, scrollPane);
+        dialog.getDialogPane().setContent(content);
+
+        ButtonType addButtonType = new ButtonType("Thêm", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(addButtonType, ButtonType.CANCEL);
+
+        dialog.showAndWait().ifPresent(response -> {
+            if (response == addButtonType) {
+                List<String> newMembers = new ArrayList<>();
+                for (CheckBox cb : checkBoxes) {
+                    if (cb.isSelected()) {
+                        newMembers.add(cb.getText());
+                    }
+                }
+
+                if (!newMembers.isEmpty()) {
+                    mainController.getNetworkManager().addMembersToGroup(currentChatTarget, newMembers);
+                    showAlert("Thành công", "Đã thêm " + newMembers.size() + " thành viên vào nhóm!");
+                } else {
+                    showAlert("Thông báo", "Chưa chọn thành viên nào!");
+                }
+            }
+        });
+    }
+
+    private void leaveGroup() {
+        if (currentChatTarget == null || !isGroupChat) {
+            showAlert("Lỗi", "Vui lòng chọn một nhóm!");
+            return;
+        }
+
+        ChatGroup group = mainController.getNetworkManager().getChatGroups().get(currentChatTarget);
+        if (group == null) {
+            showAlert("Lỗi", "Không tìm thấy nhóm!");
+            return;
+        }
+
+        // Xác nhận rời nhóm
+        Alert confirmDialog = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmDialog.setTitle("Xác nhận");
+        confirmDialog.setHeaderText("Rời nhóm");
+        confirmDialog.setContentText("Bạn có chắc chắn muốn rời nhóm \"" + currentChatTarget + "\"?");
+
+        confirmDialog.showAndWait().ifPresent(response -> {
+            if (response == ButtonType.OK) {
+                mainController.getNetworkManager().removeMemberFromGroup(currentChatTarget, mainController.getCurrentUser());
+                
+                // Chuyển về màn hình chọn chat
+                currentChatTarget = null;
+                isGroupChat = false;
+                chatMessageContainer.getChildren().clear();
+                chatTitleLabel.setText("Chọn một cuộc trò chuyện");
+                addMemberBtn.setVisible(false);
+                leaveGroupBtn.setVisible(false);
+                
+                refreshContactList();
+                showAlert("Thông báo", "Đã rời nhóm!");
+            }
+        });
+    }
+
     private void loadChatHistory(String target) {
         String filename = "chat_history/" + mainController.getCurrentUser() + "_" + target + ".txt";
         File file = new File(filename);
@@ -567,8 +782,7 @@ public class ChatManager {
             try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    if (line.matches("\\[.*\\] .*: .*")) {
-                        String timestamp = line.substring(1, line.indexOf("]"));
+					if (line.matches("\\[.*\\] .*: .*")) {
                         String rest = line.substring(line.indexOf("]") + 2);
                         String sender = rest.substring(0, rest.indexOf(":"));
                         String message = rest.substring(rest.indexOf(":") + 2);
@@ -632,6 +846,17 @@ public class ChatManager {
             default: return "📎";
         }
     }
+    
+    private boolean isImageFile(String fileName) {
+        String extension = "";
+        int i = fileName.lastIndexOf('.');
+        if (i > 0) {
+            extension = fileName.substring(i + 1).toLowerCase();
+        }
+        return extension.equals("jpg") || extension.equals("jpeg") || 
+               extension.equals("png") || extension.equals("gif") || 
+               extension.equals("bmp") || extension.equals("webp");
+    }
 
     private String formatFileSize(long size) {
         if (size < 1024) return size + " B";
@@ -648,6 +873,189 @@ public class ChatManager {
             alert.setContentText(message);
             alert.showAndWait();
         });
+    }
+
+    public void updateGroupTitle(String groupName, int memberCount) {
+        if (chatTitleLabel != null) {
+            chatTitleLabel.setText(groupName + " (" + memberCount + " thành viên)");
+        }
+    }
+
+    private void handleTyping() {
+        if (currentChatTarget == null) return;
+
+        // Hủy timeout cũ nếu có
+        if (typingTimeout != null) {
+            typingTimeout.stop();
+        }
+
+        // Gửi typing signal
+        if (isGroupChat) {
+            mainController.getNetworkManager().sendGroupTyping(currentChatTarget);
+        } else {
+            mainController.getNetworkManager().sendTyping(currentChatTarget);
+        }
+
+        // Tạo timeout mới - sau 3 giây không gõ sẽ gửi stop typing
+        typingTimeout = new javafx.animation.Timeline(
+            new javafx.animation.KeyFrame(javafx.util.Duration.seconds(3), e -> stopTyping())
+        );
+        typingTimeout.play();
+    }
+
+    private void stopTyping() {
+        if (currentChatTarget == null) return;
+
+        // Hủy timeout
+        if (typingTimeout != null) {
+            typingTimeout.stop();
+            typingTimeout = null;
+        }
+
+        // Gửi stop typing signal
+        if (isGroupChat) {
+            mainController.getNetworkManager().sendGroupStopTyping(currentChatTarget);
+        } else {
+            mainController.getNetworkManager().sendStopTyping(currentChatTarget);
+        }
+    }
+
+    public void showTypingIndicator(String username) {
+        Platform.runLater(() -> {
+            // Hủy timeout cũ nếu có
+            if (typingTimeouts.containsKey(username)) {
+                typingTimeouts.get(username).stop();
+                typingTimeouts.remove(username);
+            }
+
+            if (typingUsers.add(username)) {
+                updateTypingIndicator();
+            }
+
+            // Tạo timeout để tự động ẩn sau 5 giây nếu không nhận stop typing
+            javafx.animation.Timeline timeout = new javafx.animation.Timeline(
+                new javafx.animation.KeyFrame(javafx.util.Duration.seconds(5), e -> {
+                    if (typingUsers.remove(username)) {
+                        updateTypingIndicator();
+                    }
+                    typingTimeouts.remove(username);
+                })
+            );
+            timeout.play();
+            typingTimeouts.put(username, timeout);
+        });
+    }
+
+    public void hideTypingIndicator(String username) {
+        Platform.runLater(() -> {
+            // Hủy timeout
+            if (typingTimeouts.containsKey(username)) {
+                typingTimeouts.get(username).stop();
+                typingTimeouts.remove(username);
+            }
+
+            if (typingUsers.remove(username)) {
+                updateTypingIndicator();
+            }
+        });
+    }
+
+    private void updateTypingIndicator() {
+        Platform.runLater(() -> {
+            if (typingUsers.isEmpty()) {
+                typingIndicatorLabel.setVisible(false);
+                typingIndicatorLabel.setText("");
+                System.out.println("🔴 Typing indicator hidden");
+            } else {
+                typingIndicatorLabel.setVisible(true);
+                if (typingUsers.size() == 1) {
+                    String username = typingUsers.iterator().next();
+                    typingIndicatorLabel.setText(username + " đang gõ...");
+                    System.out.println("🟢 Typing indicator shown: " + username + " đang gõ...");
+                } else if (typingUsers.size() == 2) {
+                    String[] users = typingUsers.toArray(new String[0]);
+                    typingIndicatorLabel.setText(users[0] + " và " + users[1] + " đang gõ...");
+                    System.out.println("🟢 Typing indicator shown: " + users[0] + " và " + users[1] + " đang gõ...");
+                } else {
+                    typingIndicatorLabel.setText(typingUsers.size() + " người đang gõ...");
+                    System.out.println("🟢 Typing indicator shown: " + typingUsers.size() + " người đang gõ...");
+                }
+            }
+        });
+    }
+
+    public void clearTypingIndicators() {
+        Platform.runLater(() -> {
+            // Hủy tất cả timeouts
+            for (javafx.animation.Timeline timeout : typingTimeouts.values()) {
+                timeout.stop();
+            }
+            typingTimeouts.clear();
+            typingUsers.clear();
+            typingIndicatorLabel.setVisible(false);
+            typingIndicatorLabel.setText("");
+        });
+    }
+    
+    private void openImageInViewer(File imageFile) {
+        try {
+            if (java.awt.Desktop.isDesktopSupported()) {
+                java.awt.Desktop.getDesktop().open(imageFile);
+            }
+        } catch (IOException e) {
+            showAlert("Lỗi", "Không thể mở ảnh!");
+        }
+    }
+    
+    private void downloadFile(File file, String fileName) {
+        if (file.exists()) {
+            FileChooser fileChooser = new FileChooser();
+            fileChooser.setTitle("Lưu file");
+            fileChooser.setInitialFileName(fileName);
+            File saveFile = fileChooser.showSaveDialog(mainController.getPrimaryStage());
+
+            if (saveFile != null) {
+                try {
+                    Files.copy(file.toPath(), saveFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    showAlert("Thành công", "Đã lưu file: " + fileName);
+                } catch (IOException ex) {
+                    showAlert("Lỗi", "Không thể lưu file!");
+                }
+            }
+        } else {
+            showAlert("Thông báo", "File đã được lưu trong thư mục shared_files/");
+        }
+    }
+    
+    private void addFileInfoUI(VBox messageBubble, String fileName, long fileSize, String uniqueFileName, boolean isSent, File file) {
+        HBox fileInfo = new HBox(10);
+        fileInfo.setAlignment(Pos.CENTER_LEFT);
+
+        Label fileIcon = new Label(getFileIcon(fileName));
+        fileIcon.setStyle("-fx-font-size: 32;");
+
+        VBox fileDetails = new VBox(3);
+        Label fileNameLabel = new Label(fileName);
+        fileNameLabel.setWrapText(true);
+        fileNameLabel.setStyle("-fx-font-size: 14; -fx-font-weight: bold; -fx-text-fill: " +
+                (isSent ? "white" : "black") + ";");
+
+        Label fileSizeLabel = new Label(formatFileSize(fileSize));
+        fileSizeLabel.setStyle("-fx-font-size: 12; -fx-text-fill: " +
+                (isSent ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)") + ";");
+
+        fileDetails.getChildren().addAll(fileNameLabel, fileSizeLabel);
+        fileInfo.getChildren().addAll(fileIcon, fileDetails);
+
+        Button downloadBtn = new Button("⬇ Tải về");
+        downloadBtn.setStyle("-fx-background-color: " + (isSent ? "rgba(255,255,255,0.2)" : "#0068FF") + ";" +
+                "-fx-text-fill: white;" +
+                "-fx-font-size: 12; -fx-font-weight: bold; -fx-padding: 6 12;" +
+                "-fx-background-radius: 8; -fx-cursor: hand;");
+
+        downloadBtn.setOnAction(e -> downloadFile(file, fileName));
+
+        messageBubble.getChildren().addAll(fileInfo, downloadBtn);
     }
 
     // Getters

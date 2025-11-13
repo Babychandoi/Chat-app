@@ -15,7 +15,32 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class VideoCallManager {
     private static final int VIDEO_PORT_BASE = 9500;
     private static final int VIDEO_AUDIO_PORT_BASE = 9600;
-    private static final AudioFormat AUDIO_FORMAT = new AudioFormat(16000, 16, 1, true, true);
+    // Audio format - thử little-endian trước, nếu không được sẽ fallback
+    private static AudioFormat getAudioFormat() {
+        // Thử little-endian trước (Windows thường hỗ trợ)
+        AudioFormat format = new AudioFormat(16000, 16, 1, true, false);
+        if (isFormatSupported(format)) {
+            return format;
+        }
+        
+        // Fallback sang big-endian
+        format = new AudioFormat(16000, 16, 1, true, true);
+        if (isFormatSupported(format)) {
+            return format;
+        }
+        
+        // Fallback cuối cùng: unsigned little-endian
+        return new AudioFormat(16000, 16, 1, false, false);
+    }
+    
+    private static boolean isFormatSupported(AudioFormat format) {
+        try {
+            DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
+            return AudioSystem.isLineSupported(info);
+        } catch (Exception e) {
+            return false;
+        }
+    }
     private static final int BUFFER_SIZE = 1024;
     private static final Dimension VIDEO_SIZE = new Dimension(640, 480);
     private static final int FPS = 15;
@@ -85,9 +110,19 @@ public class VideoCallManager {
                 while (!Thread.currentThread().isInterrupted()) {
                     Socket clientSocket = audioServer.accept();
                     System.out.println("🎤 New audio connection from: " + clientSocket.getInetAddress());
-                    this.audioSocket = clientSocket;
-                    if (isVideoCallActive.get()) {
-                        startAudioStreaming();
+                    
+                    // CHỈ set audio socket nếu chưa có hoặc đã đóng
+                    if (this.audioSocket == null || this.audioSocket.isClosed()) {
+                        this.audioSocket = clientSocket;
+                        System.out.println("✅ Audio socket set");
+                        
+                        if (isVideoCallActive.get()) {
+                            System.out.println("🎤 Video call is active, starting audio streaming...");
+                            startAudioStreaming();
+                        }
+                    } else {
+                        System.out.println("⚠️ Audio socket already exists, closing new connection");
+                        clientSocket.close();
                     }
                 }
             } catch (SocketException e) {
@@ -140,8 +175,16 @@ public class VideoCallManager {
                 if (initializeWebcam()) {
                     isVideoCallActive.set(true);
 
-                    // Bắt đầu streaming ngay sau khi gửi response
+                    // Bắt đầu video streaming
                     startVideoStreaming();
+                    
+                    // QUAN TRỌNG: Bắt đầu audio streaming nếu audio socket đã sẵn sàng
+                    if (audioSocket != null && !audioSocket.isClosed()) {
+                        System.out.println("✅ Audio socket ready, starting audio streaming");
+                        startAudioStreaming();
+                    } else {
+                        System.out.println("⚠️ Audio socket not ready yet, waiting for connection...");
+                    }
 
                     if (callListener != null) {
                         callListener.onCallAccepted();
@@ -371,6 +414,14 @@ public class VideoCallManager {
                 while (isVideoCallActive.get()) {
                     try {
                         int imageSize = dis.readInt();
+                        
+                        // Kiểm tra signal END (size = -1)
+                        if (imageSize == -1) {
+                            System.out.println("📥 Received VIDEO_CALL_ENDED signal from remote");
+                            endVideoCall();
+                            break;
+                        }
+                        
                         if (imageSize <= 0 || imageSize > 5000000) {
                             System.err.println("❌ Invalid image size: " + imageSize);
                             break;
@@ -396,7 +447,8 @@ public class VideoCallManager {
                             }
                         }
                     } catch (EOFException | SocketException e) {
-                        System.out.println("📥 Remote closed connection");
+                        System.out.println("📥 Remote closed video connection");
+                        endVideoCall();
                         break;
                     } catch (Exception e) {
                         System.err.println("❌ Error receiving frame: " + e.getMessage());
@@ -442,22 +494,98 @@ public class VideoCallManager {
     }
 
     private void startAudioStreaming() {
+        System.out.println("🎤 Starting audio streaming...");
+        System.out.println("  - Audio socket: " + (audioSocket != null ? "✓" : "✗"));
+        System.out.println("  - Audio socket connected: " + (audioSocket != null && audioSocket.isConnected() ? "✓" : "✗"));
+        System.out.println("  - Audio socket closed: " + (audioSocket != null && audioSocket.isClosed() ? "✓" : "✗"));
+        System.out.println("  - Microphone: " + (microphone != null ? "✓" : "✗"));
+        System.out.println("  - Speaker: " + (speaker != null ? "✓" : "✗"));
+        
+        if (audioSocket == null || audioSocket.isClosed()) {
+            System.err.println("❌ Cannot start audio streaming: audio socket is null or closed");
+            return;
+        }
+        
+        // KIỂM TRA: Nếu audio devices đã được mở rồi, không mở lại
+        if (microphone != null && speaker != null) {
+            System.out.println("⚠️ Audio devices already initialized, skipping initialization");
+            // Chỉ start threads nếu chưa start
+            if (audioSendThread == null || !audioSendThread.isAlive()) {
+                startAudioThreads();
+            } else {
+                System.out.println("⚠️ Audio threads already running");
+            }
+            return;
+        }
+        
         try {
-            DataLine.Info micInfo = new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT);
+            // Tự động tìm format được hỗ trợ
+            AudioFormat audioFormat = getAudioFormat();
+            System.out.println("🎤 Using audio format: " + audioFormat);
+            
+            DataLine.Info micInfo = new DataLine.Info(TargetDataLine.class, audioFormat);
             microphone = (TargetDataLine) AudioSystem.getLine(micInfo);
-            microphone.open(AUDIO_FORMAT);
+            microphone.open(audioFormat);
             microphone.start();
+            System.out.println("✅ Microphone opened");
 
-            DataLine.Info speakerInfo = new DataLine.Info(SourceDataLine.class, AUDIO_FORMAT);
+            DataLine.Info speakerInfo = new DataLine.Info(SourceDataLine.class, audioFormat);
             speaker = (SourceDataLine) AudioSystem.getLine(speakerInfo);
-            speaker.open(AUDIO_FORMAT);
+            speaker.open(audioFormat);
+            
+            // Giảm volume của speaker để tránh echo (vọng)
+            if (speaker.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+                FloatControl volumeControl = (FloatControl) speaker.getControl(FloatControl.Type.MASTER_GAIN);
+                float currentVolume = volumeControl.getValue();
+                float newVolume = Math.max(volumeControl.getMinimum(), currentVolume - 20.0f);
+                volumeControl.setValue(newVolume);
+                System.out.println("🔊 Video speaker volume reduced to: " + newVolume + " dB (from " + currentVolume + " dB)");
+                System.out.println("💡 TIP: Use headphones to avoid echo!");
+            } else {
+                System.out.println("⚠️ Cannot control speaker volume - echo may occur");
+                System.out.println("💡 STRONGLY RECOMMENDED: Use headphones!");
+            }
+            
+            // Đảm bảo microphone được set null khi đóng để tránh giữ lại
+            System.out.println("✅ Audio devices initialized with format: " + audioFormat);
+            
             speaker.start();
+            System.out.println("✅ Speaker opened");
 
-            System.out.println("🎤 Audio devices initialized");
+            System.out.println("✅ Audio devices initialized");
 
-            // Thread gửi audio
-            audioSendThread = new Thread(() -> {
-                System.out.println("🎤 Starting audio sending");
+            // Start audio threads
+            startAudioThreads();
+
+        } catch (LineUnavailableException e) {
+            System.err.println("❌ Audio devices unavailable: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("❌ Error in audio streaming: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Start audio send/receive threads (tách riêng để tránh duplicate)
+     */
+    private void startAudioThreads() {
+        if (audioSocket == null || audioSocket.isClosed()) {
+            System.err.println("❌ Cannot start audio threads: socket not ready");
+            return;
+        }
+        
+        if (microphone == null || speaker == null) {
+            System.err.println("❌ Cannot start audio threads: devices not initialized");
+            return;
+        }
+        
+        System.out.println("🎤 Starting audio threads...");
+        
+        // Thread gửi audio
+        audioSendThread = new Thread(() -> {
+                System.out.println("🎤 Audio sending thread started");
+                int bytesSent = 0;
                 try {
                     OutputStream out = audioSocket.getOutputStream();
                     byte[] buffer = new byte[BUFFER_SIZE];
@@ -467,19 +595,26 @@ public class VideoCallManager {
                         if (bytesRead > 0) {
                             out.write(buffer, 0, bytesRead);
                             out.flush();
+                            bytesSent += bytesRead;
+                            
+                            if (bytesSent % 10240 == 0) { // Log mỗi 10KB
+                                System.out.println("🎤 Sent " + (bytesSent / 1024) + " KB audio data");
+                            }
                         }
                     }
                 } catch (IOException e) {
                     System.err.println("❌ Audio sending error: " + e.getMessage());
+                    e.printStackTrace();
                 }
-                System.out.println("🎤 Audio sending ended");
+                System.out.println("🎤 Audio sending ended. Total sent: " + (bytesSent / 1024) + " KB");
             });
             audioSendThread.setDaemon(true);
             audioSendThread.start();
 
             // Thread nhận audio
             audioReceiveThread = new Thread(() -> {
-                System.out.println("🎧 Starting audio receiving");
+                System.out.println("🎧 Audio receiving thread started");
+                int bytesReceived = 0;
                 try {
                     InputStream in = audioSocket.getInputStream();
                     byte[] buffer = new byte[BUFFER_SIZE];
@@ -488,19 +623,21 @@ public class VideoCallManager {
                         int bytesRead = in.read(buffer);
                         if (bytesRead > 0) {
                             speaker.write(buffer, 0, bytesRead);
+                            bytesReceived += bytesRead;
+                            
+                            if (bytesReceived % 10240 == 0) { // Log mỗi 10KB
+                                System.out.println("🎧 Received " + (bytesReceived / 1024) + " KB audio data");
+                            }
                         }
                     }
                 } catch (IOException e) {
                     System.err.println("❌ Audio receiving error: " + e.getMessage());
+                    e.printStackTrace();
                 }
-                System.out.println("🎧 Audio receiving ended");
+                System.out.println("🎧 Audio receiving ended. Total received: " + (bytesReceived / 1024) + " KB");
             });
             audioReceiveThread.setDaemon(true);
             audioReceiveThread.start();
-
-        } catch (LineUnavailableException e) {
-            System.err.println("❌ Audio devices unavailable: " + e.getMessage());
-        }
     }
 
     public void endVideoCall() {
@@ -508,56 +645,217 @@ public class VideoCallManager {
             return;
         }
 
-        System.out.println("🛑 Ending video call...");
+        System.out.println("🛑 Ending video call COMPLETELY...");
         isVideoCallActive.set(false);
 
         try {
-            Thread.sleep(500);
+            // Gửi frame đặc biệt với size = -1 để báo hiệu END
+            if (videoSocket != null && !videoSocket.isClosed()) {
+                try {
+                    DataOutputStream dos = new DataOutputStream(videoSocket.getOutputStream());
+                    dos.writeInt(-1); // Signal END với size = -1
+                    dos.flush();
+                    System.out.println("📤 Sent VIDEO_CALL_ENDED signal (size=-1)");
+                } catch (IOException e) {
+                    // Socket đã đóng, bỏ qua
+                }
+            }
+            
+            // Đợi message được gửi
+            Thread.sleep(100);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
+        // DỪNG TẤT CẢ THREAD TRƯỚC KHI ĐÓNG RESOURCES
+        System.out.println("🛑 Stopping all threads...");
+        if (videoSendThread != null && videoSendThread.isAlive()) {
+            System.out.println("🛑 Interrupting video send thread...");
+            videoSendThread.interrupt();
+        }
+        if (videoReceiveThread != null && videoReceiveThread.isAlive()) {
+            System.out.println("🛑 Interrupting video receive thread...");
+            videoReceiveThread.interrupt();
+        }
+        if (audioSendThread != null && audioSendThread.isAlive()) {
+            System.out.println("🛑 Interrupting audio send thread...");
+            audioSendThread.interrupt();
+        }
+        if (audioReceiveThread != null && audioReceiveThread.isAlive()) {
+            System.out.println("🛑 Interrupting audio receive thread...");
+            audioReceiveThread.interrupt();
+        }
+        
+        // ĐỢI CÁC THREAD DỪNG
         try {
-            if (videoSendThread != null) {
-                videoSendThread.interrupt();
+            System.out.println("⏳ Waiting for threads to stop...");
+            Thread.sleep(500); // Tăng lên 500ms
+            
+            // Kiểm tra xem threads đã dừng chưa
+            boolean allStopped = true;
+            if (audioSendThread != null && audioSendThread.isAlive()) {
+                System.err.println("⚠️ Audio send thread still alive!");
+                allStopped = false;
             }
-            if (videoReceiveThread != null) {
-                videoReceiveThread.interrupt();
+            if (audioReceiveThread != null && audioReceiveThread.isAlive()) {
+                System.err.println("⚠️ Audio receive thread still alive!");
+                allStopped = false;
             }
-            if (audioSendThread != null) {
-                audioSendThread.interrupt();
+            
+            if (allStopped) {
+                System.out.println("✅ All threads stopped");
+            } else {
+                System.err.println("⚠️ Some threads still running - forcing cleanup anyway");
             }
-            if (audioReceiveThread != null) {
-                audioReceiveThread.interrupt();
-            }
+        } catch (InterruptedException e) {
+            System.err.println("⚠️ Interrupted while waiting for threads");
+        }
+        
+        // ĐÓNG AUDIO DEVICES - QUAN TRỌNG: ĐẢM BẢO CẢ 2 BÊN ĐỀU ĐÓNG
+        System.out.println("🛑 Force closing ALL audio devices...");
+        closeAudioDevicesCompletely();
+        
+        // ĐÓNG WEBCAM
+        closeWebcam();
+        
+        // ĐÓNG SOCKETS
+        System.out.println("🛑 Closing all sockets...");
+        closeAllSockets();
+        
+        // CLEAN UP REFERENCES
+        localVideoView = null;
+        remoteVideoView = null;
 
-            closeWebcam();
+        if (callListener != null) {
+            callListener.onCallEnded();
+        }
 
-            if (microphone != null && microphone.isOpen()) {
-                microphone.stop();
-                microphone.close();
+        System.out.println("✅ Video call ended COMPLETELY on both audio and video");
+    }
+
+    /**
+     * PHƯƠNG THỨC MỚI: Đóng hoàn toàn audio devices
+     */
+    private void closeAudioDevicesCompletely() {
+        System.out.println("🛑 [VIDEO] Starting COMPLETE audio device cleanup...");
+        
+        // ĐÓNG MICROPHONE
+        if (microphone != null) {
+            try {
+                System.out.println("🎤 [VIDEO] Closing microphone (isOpen=" + microphone.isOpen() + ")...");
+                
+                // LUÔN LUÔN gọi stop() và close() bất kể trạng thái
+                try {
+                    if (microphone.isOpen() || microphone.isActive()) {
+                        microphone.stop();
+                        System.out.println("✅ [VIDEO] Microphone stopped");
+                    }
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error stopping microphone: " + e.getMessage());
+                }
+                
+                try {
+                    microphone.flush(); // Flush buffer
+                    System.out.println("✅ [VIDEO] Microphone flushed");
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error flushing microphone: " + e.getMessage());
+                }
+                
+                try {
+                    microphone.close();
+                    System.out.println("✅ [VIDEO] Microphone closed");
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error closing microphone: " + e.getMessage());
+                }
+                
+            } catch (Exception e) {
+                System.err.println("⚠️ [VIDEO] Error in microphone cleanup: " + e.getMessage());
+            } finally {
+                microphone = null;
+                System.out.println("✅ [VIDEO] Microphone reference released");
             }
-            if (speaker != null && speaker.isOpen()) {
-                speaker.stop();
-                speaker.close();
+        } else {
+            System.out.println("🎤 [VIDEO] Microphone already null");
+        }
+        
+        // ĐÓNG SPEAKER
+        if (speaker != null) {
+            try {
+                System.out.println("🔊 [VIDEO] Closing speaker (isOpen=" + speaker.isOpen() + ")...");
+                
+                // LUÔN LUÔN gọi stop() và close() bất kể trạng thái
+                try {
+                    if (speaker.isOpen() || speaker.isActive()) {
+                        speaker.stop();
+                        System.out.println("✅ [VIDEO] Speaker stopped");
+                    }
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error stopping speaker: " + e.getMessage());
+                }
+                
+                try {
+                    speaker.flush();
+                    System.out.println("✅ [VIDEO] Speaker flushed");
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error flushing speaker: " + e.getMessage());
+                }
+                
+                try {
+                    speaker.close();
+                    System.out.println("✅ [VIDEO] Speaker closed");
+                } catch (Exception e) {
+                    System.err.println("⚠️ [VIDEO] Error closing speaker: " + e.getMessage());
+                }
+                
+            } catch (Exception e) {
+                System.err.println("⚠️ [VIDEO] Error in speaker cleanup: " + e.getMessage());
+            } finally {
+                speaker = null;
+                System.out.println("✅ [VIDEO] Speaker reference released");
             }
-            if (videoSocket != null && !videoSocket.isClosed()) {
-                videoSocket.close();
-            }
-            if (audioSocket != null && !audioSocket.isClosed()) {
+        } else {
+            System.out.println("🔊 [VIDEO] Speaker already null");
+        }
+        
+        // QUAN TRỌNG: Force garbage collection và đợi audio system release
+        try {
+            System.out.println("🔄 [VIDEO] Forcing garbage collection...");
+            System.gc(); // Suggest garbage collection
+            Thread.sleep(200);
+            
+            System.out.println("🔄 [VIDEO] Waiting for audio system to release resources...");
+            Thread.sleep(500); // Đợi audio system release
+            
+            System.out.println("✅ [VIDEO] Audio system resources released");
+        } catch (InterruptedException e) {
+            System.err.println("⚠️ [VIDEO] Interrupted while waiting for audio release");
+        }
+    }
+
+    /**
+     * PHƯƠNG THỨC MỚI: Đóng tất cả sockets
+     */
+    private void closeAllSockets() {
+        if (audioSocket != null && !audioSocket.isClosed()) {
+            try {
                 audioSocket.close();
+                System.out.println("✅ Audio socket closed");
+            } catch (IOException e) {
+                System.err.println("⚠️ Error closing audio socket: " + e.getMessage());
+            } finally {
+                audioSocket = null;
             }
-
-            localVideoView = null;
-            remoteVideoView = null;
-
-            if (callListener != null) {
-                callListener.onCallEnded();
+        }
+        
+        if (videoSocket != null && !videoSocket.isClosed()) {
+            try {
+                videoSocket.close();
+                System.out.println("✅ Video socket closed");
+            } catch (IOException e) {
+                System.err.println("⚠️ Error closing video socket: " + e.getMessage());
+            } finally {
+                videoSocket = null;
             }
-
-            System.out.println("✅ Video call ended completely");
-        } catch (IOException e) {
-            System.err.println("❌ Error ending video call: " + e.getMessage());
         }
     }
 

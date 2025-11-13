@@ -35,14 +35,18 @@ Chat P2P là ứng dụng nhắn tin ngang hàng (peer-to-peer) được phát t
 
 ### ✅ Core Features
 - [x] User authentication (login/register)
-- [x] Auto peer discovery trên LAN
+- [x] Session lock management (ngăn đăng nhập trùng trên LAN)
+- [x] Auto peer discovery trên LAN (scan thông minh với ping + TCP)
 - [x] Chat 1-1 real-time
 - [x] Group chat với multi-members
-- [x] File sharing (tất cả các định dạng)
-- [x] Voice call P2P
-- [x] Video call với audio
+- [x] File sharing (tất cả các định dạng, max 50MB)
+- [x] Image preview trong chat
+- [x] Voice call P2P với noise gate
+- [x] Video call với audio sync
 - [x] Chat history persistence
-- [x] Group synchronization
+- [x] Group synchronization (thêm/xóa thành viên)
+- [x] Typing indicators (1-1 và nhóm)
+- [x] Online status indicators
 
 ### 🚧 Roadmap
 - [ ] End-to-end encryption
@@ -128,7 +132,7 @@ Chat P2P là ứng dụng nhắn tin ngang hàng (peer-to-peer) được phát t
 
 ### Prerequisites
 
-- **Java JDK 8+** (recommended: JDK 11 or 17)
+- **Java JDK 17+** (required: Java 17)
 - **JavaFX SDK 17.0.2+**
 - **Maven** (for dependency management)
 - **Webcam** (for video call)
@@ -180,10 +184,12 @@ java --module-path /path/to/javafx-sdk/lib --add-modules javafx.controls P2PChat
 ### 1. Đăng ký tài khoản
 
 ```
-Username: alice
+Username: alice (tối thiểu 3 ký tự)
 Password: ********
 ➜ Click "Đăng ký tài khoản"
 ```
+
+**Lưu ý**: Username phải unique, không trùng với user khác trong LAN.
 
 ### 2. Đăng nhập
 
@@ -193,11 +199,17 @@ Password: ********
 ➜ Click "Đăng nhập"
 ```
 
+**Lưu ý**: 
+- Mỗi username chỉ có thể đăng nhập trên 1 máy trong LAN (session lock)
+- Nếu đã đăng nhập trên máy khác, sẽ báo lỗi
+
 ### 3. Chat 1-1
 
-- Danh sách contacts tự động hiển thị các peers đã online
+- Danh sách contacts tự động hiển thị các peers đã online (có indicator ● xanh)
 - Click vào contact để bắt đầu chat
 - Gõ tin nhắn và Enter hoặc click ➤
+- Typing indicator sẽ hiển thị khi peer đang gõ
+- Chat history tự động load khi mở chat
 
 ### 4. Gửi file
 
@@ -205,34 +217,55 @@ Password: ********
 📎 Click icon đính kèm
 ➜ Chọn file (max 50MB)
 ➜ File tự động gửi và hiển thị
+➜ Ảnh sẽ có preview trong chat
+➜ Double-click ảnh để xem full size
+➜ Click "⬇ Tải về" để lưu file
 ```
 
 ### 5. Tạo nhóm
 
 ```
-➕ Click icon tạo nhóm
+➕ Click icon tạo nhóm (góc trên bên phải)
 ➜ Nhập tên nhóm
-☑️ Chọn các thành viên
+☑️ Chọn các thành viên từ danh sách online
 ➜ Click "Tạo nhóm"
+➜ Nhóm tự động sync đến tất cả thành viên
 ```
+
+**Quản lý nhóm**:
+- ➕ Thêm thành viên: Click nút ➕ trong header khi đang chat nhóm
+- 🚪 Rời nhóm: Click nút 🚪 trong header
+- Thành viên mới/rời sẽ có thông báo trong chat
 
 ### 6. Voice Call
 
 ```
 📞 Click icon phone trong chat 1-1
-➜ Đợi peer accept
-➜ Bắt đầu nói chuyện
+➜ Đợi peer accept (có dialog incoming call)
+➜ Bắt đầu nói chuyện (có timer hiển thị)
+➜ Noise gate tự động filter tiếng ồn
 🔴 Click "Kết thúc" để dừng
 ```
+
+**Lưu ý**: 
+- Voice call sẽ tự động reject nếu đang có video call active
+- Khuyến nghị dùng headphone để tránh echo
 
 ### 7. Video Call
 
 ```
 📹 Click icon video trong chat 1-1
-➜ Đợi peer accept
+➜ Đợi peer accept (có dialog incoming call)
 ➜ Video/audio streaming tự động
+➜ Local video hiển thị overlay góc phải trên
+➜ Remote video hiển thị full screen
 🔴 Click "Kết thúc" để dừng
 ```
+
+**Lưu ý**: 
+- Video call sử dụng 2 sockets riêng biệt (video + audio)
+- Audio tự động sync với video
+- Có controls: Mute (🎤), Camera toggle (📷), End call (🔴)
 
 ---
 
@@ -282,26 +315,32 @@ Password: ********
 | **P2PChatApp** | Entry point, khởi tạo JavaFX |
 | **MainController** | Điều phối toàn bộ app lifecycle |
 | **AuthManager** | Xác thực user, UI login/register |
-| **ChatManager** | UI chat, message display, group management |
-| **NetworkManager** | P2P networking, discovery, routing |
+| **ChatManager** | UI chat, message display, group management, typing indicators |
+| **NetworkManager** | P2P networking, discovery, routing, file transfer |
 | **CallManager** | UI cho voice/video call, accept/reject |
-| **VoiceCallManager** | Voice streaming logic |
+| **VoiceCallManager** | Voice streaming logic với noise gate |
 | **VideoCallManager** | Video + audio streaming logic |
+| **SessionLockManager** | Ngăn đăng nhập trùng lặp trên LAN |
 | **PeerInfo** | Lưu thông tin peer (IP, ports) |
+| **PeerConnection** | Wrapper cho peer socket connection |
 | **ChatGroup** | Model cho group chat |
 
 ### Network Ports
 
 | Service | Port Range | Description |
 |---------|-----------|-------------|
-| Discovery | `8889` | Peer discovery server (fixed) |
+| Discovery | `11000-11049` | Peer discovery server (50 ports, dynamic) |
 | Chat Server | `8888-9887` | Nhận kết nối chat từ peers |
 | File Server | `8890-9889` | File transfer server |
 | Voice Call | `9000-9999` | Voice streaming |
 | Video Stream | `9500-10499` | Video data |
 | Video Audio | `9600-10599` | Audio cho video call |
+| Session Lock | `20000-39999` | Ngăn đăng nhập trùng lặp trên LAN |
 
-**Note**: Ports được tính động: `BASE_PORT + abs(username.hashCode() % 1000)`
+**Note**: 
+- Discovery port: `11000 + abs(username.hashCode() % 50)` (chỉ 50 ports để scan nhanh hơn)
+- Các port khác: `BASE_PORT + abs(username.hashCode() % 1000)`
+- Session lock port: `20000 + abs(username.hashCode() % 20000)`
 
 ---
 
@@ -393,16 +432,21 @@ chat-p2p/
 
 ### Threading Model
 
-- **Discovery Threads**: 254 concurrent threads quét subnet
+- **Discovery Threads**: 
+    - Ping scan: 254 threads song song (tối đa 8s timeout)
+    - Discovery scan: 50 ports × số active hosts (tối đa 60s timeout)
+    - Executor pool: 50 threads đồng thời
 - **Server Threads**:
-    - Discovery Server (1 thread)
+    - Discovery Server (1 thread, port 11000-11049)
     - Chat Server (1 thread + N connection threads)
     - File Server (1 thread + N transfer threads)
     - Voice Server (1 thread + N call threads)
     - Video Server (1 thread + N call threads)
+    - Video Audio Server (1 thread + N call threads)
 - **Call Threads**:
-    - Audio Send/Receive (2 threads)
-    - Video Send/Receive/Display (3 threads)
+    - Voice: Audio Send/Receive (2 threads)
+    - Video: Video Send/Receive/Display (3 threads) + Audio Send/Receive (2 threads)
+- **Session Lock**: Local lock server (1 thread)
 
 ### Data Structures
 
@@ -422,8 +466,9 @@ AtomicBoolean isVideoCallActive;
 - **Resolution**: 640x480
 - **FPS**: 15
 - **Codec**: JPEG compression
-- **Local Display**: 200x150 (overlay)
-- **Remote Display**: 800x600 (main)
+- **Local Display**: 200x150 (overlay, góc phải trên)
+- **Remote Display**: 800x600 (main screen)
+- **Frame Delay**: ~66ms (1000/15)
 
 ### Audio Specs
 
@@ -431,7 +476,11 @@ AtomicBoolean isVideoCallActive;
 - **Bit Depth**: 16-bit
 - **Channels**: Mono (1)
 - **Buffer Size**: 1024 bytes
-- **Format**: PCM signed big-endian
+- **Format**: 
+    - Voice call: PCM signed little-endian (Windows compatible)
+    - Video call: Auto-detect (little-endian → big-endian → unsigned fallback)
+- **Noise Gate**: RMS threshold 500 (chỉ gửi khi có tiếng nói)
+- **Volume Control**: Tự động giảm -20dB để tránh echo
 
 ---
 
@@ -439,27 +488,33 @@ AtomicBoolean isVideoCallActive;
 
 ### Peers không tự động hiển thị
 
-**Nguyên nhân**: Firewall block port 8889
+**Nguyên nhân**: Firewall block discovery ports (11000-11049) hoặc chat ports
 
 **Giải pháp**:
 ```bash
-# Windows
-netsh advfirewall firewall add rule name="P2P Chat Discovery" dir=in action=allow protocol=TCP localport=8889
+# Windows - Mở discovery ports
+netsh advfirewall firewall add rule name="P2P Chat Discovery" dir=in action=allow protocol=TCP localport=11000-11049
+
+# Windows - Mở chat ports (8888-9887)
+netsh advfirewall firewall add rule name="P2P Chat Server" dir=in action=allow protocol=TCP localport=8888-9887
 
 # Linux
-sudo ufw allow 8889/tcp
+sudo ufw allow 11000:11049/tcp
+sudo ufw allow 8888:9887/tcp
 
 # macOS
 # System Preferences > Security & Privacy > Firewall > Firewall Options
+# Thêm ports 11000-11049 và 8888-9887
 ```
 
 ### Video call không kết nối
 
 **Checklist**:
 - ✅ Webcam đã được cấp quyền cho ứng dụng
-- ✅ Không có app khác đang sử dụng webcam
-- ✅ Firewall cho phép ports 9500-10599
+- ✅ Không có app khác đang sử dụng webcam (kể cả voice call)
+- ✅ Firewall cho phép ports 9500-10599 (video + audio)
 - ✅ Peer đã accept cuộc gọi
+- ✅ Không có voice call đang active (sẽ tự động reject)
 
 ### File transfer failed
 
@@ -471,9 +526,11 @@ sudo ufw allow 8889/tcp
 ### Voice/Video có tiếng echo
 
 **Giải pháp**:
-- Sử dụng headphone
-- Giảm volume speaker
+- **Khuyến nghị mạnh**: Sử dụng headphone (tốt nhất)
+- App tự động giảm volume -20dB nhưng vẫn có thể echo
 - Kiểm tra audio input/output settings của OS
+- Đảm bảo microphone không quá gần speaker
+- Voice call có noise gate (chỉ gửi khi có tiếng nói) giúp giảm echo
 
 ---
 

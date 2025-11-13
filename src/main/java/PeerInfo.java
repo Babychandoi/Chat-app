@@ -5,6 +5,7 @@ public class PeerInfo {
     public int voicePort;
     public int videoPort;
     public int videoAudioPort;
+    public int discoveryPort;
 
     public PeerInfo(String ip, int port, int filePort) {
         this.ip = ip;
@@ -13,15 +14,17 @@ public class PeerInfo {
         this.voicePort = -1;
         this.videoPort = -1;
         this.videoAudioPort = -1;
+        this.discoveryPort = -1;
     }
 
-    public PeerInfo(String ip, int port, int filePort, int voicePort, int videoPort, int videoAudioPort) {
+    public PeerInfo(String ip, int port, int filePort, int voicePort, int videoPort, int videoAudioPort, int discoveryPort) {
         this.ip = ip;
         this.port = port;
         this.filePort = filePort;
         this.voicePort = voicePort;
         this.videoPort = videoPort;
         this.videoAudioPort = videoAudioPort;
+        this.discoveryPort = discoveryPort;
     }
 
     public String getIp() {
@@ -60,6 +63,14 @@ public class PeerInfo {
         this.videoAudioPort = videoAudioPort;
     }
 
+    public int getDiscoveryPort() {
+        return discoveryPort;
+    }
+
+    public void setDiscoveryPort(int discoveryPort) {
+        this.discoveryPort = discoveryPort;
+    }
+
     @Override
     public String toString() {
         return "PeerInfo{" +
@@ -69,6 +80,7 @@ public class PeerInfo {
                 ", voicePort=" + voicePort +
                 ", videoPort=" + videoPort +
                 ", videoAudioPort=" + videoAudioPort +
+                ", discoveryPort=" + discoveryPort +
                 '}';
     }
 }

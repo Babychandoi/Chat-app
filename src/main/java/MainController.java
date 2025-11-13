@@ -47,6 +47,11 @@ public class MainController {
     public CallManager getCallManager() { return callManager; }
 
     public void shutdown() {
+        // Xóa session khi đăng xuất
+        if (currentUser != null) {
+			// Nhả khóa phiên LAN
+			SessionLockManager.getInstance().release();
+        }
         networkManager.shutdown();
         callManager.shutdown();
         Platform.exit();
